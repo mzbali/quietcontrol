@@ -2,8 +2,9 @@
 
 - Repository: /Users/mzbali/projects/quietcontrol; GitHub mzbali/quietcontrol.
 - Native SwiftUI iOS 17+ app, CoreBluetooth Bose FEBE/prince protocol. No server/DB.
-- Read docs/testing/PLAN.md and README.md; docs/HANDOVER.md is historical context,
-  with some stale Git/release claims. Verify live Git/build state when relevant.
+- Read AGENTS.md and docs/testing/README.md for the current testing/phone policy,
+  then PLAN.md for design. Hardware observations and unresolved device-specific
+  cautions live in docs/HARDWARE_CHECK.md. Verify live Git/build state as needed.
 - Inherited AGENTS rules: prefer rg/fd; no AI attribution in commits or PRs;
   one topic in this parent conversation. No new top-level threads or hand relays.
 - Provider: acpRegistry_opencode_v2; model opencode-go/deepseek-v4.1-flash.
@@ -27,6 +28,13 @@
 - Data copy: none. Never fetch phone app data, pairing addresses, or real reports.
 - Pages: Home, Equalizer, Focus editor, Headphone Settings, Connection details,
   Diagnostics. Use native XCUITest, not web browser tools or iPhone Mirroring.
+- Routine simulator QA leaves the real phone available. A full preinstall PASS
+  permits an already-authorized installation without an extra Mirroring gate;
+  the user checks real headphone behavior during normal use and reports bugs.
+  Use real-phone computer use only for a specific device-only investigation or
+  requested acceptance, with a bounded session coordinated with the user.
+- User target: iOS 27; simulator acceptance used iOS 27.1. The app's iOS 17 minimum
+  is a separate compatibility limit. Do not present hardware behavior as proven.
 - Available baseline: Xcode 27.1, iOS 27.1 iPhone Duo runtime. Create a dedicated
   simulator; leave the existing booted simulator and unrelated apps untouched.
 - Preserve: release/device paths; existing preview/render flags; confirmed-only
@@ -34,4 +42,6 @@
   snapshot compatibility; recovery journals/gates; presets; gestures; accessibility.
 - Keep local signing config, profiles, generated reports, build products ignored.
 - Merge rule: rebase merge, no AI attribution. No merges by implementation tasks.
-- No real-phone installation, radio writes, provisioning, paid CI, or deployment.
+- Test/delegate tasks do not authorize real-phone installation, radio writes,
+  provisioning, paid CI or deployment. Follow existing user authorization for any
+  separate installation; do not infer it from a passing test gate.

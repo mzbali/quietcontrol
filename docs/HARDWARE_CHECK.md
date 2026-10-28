@@ -236,3 +236,21 @@ Headphone Settings → Power now offers Auto-Off ([1.4]) and Remember My Mode
 ([31.5]) through the confirmed preference write path, gated to this model and
 firmware. No new hardware writes were performed when adding them. Values other
 than Never/20 minutes, idle shutdown and power-on behavior remain untested.
+
+## Auto-Off incident and final UI checks, builds 28/29 (26 October 2026)
+
+Build 28 read-backs confirmed Auto-Off Never → 20 minutes → Never and Remember
+My Mode On → Off → On, with the original settings restored. At 22:50:00 UTC the
+QC dropped BLE with CBError 7, 38 seconds after restoring Auto-Off, with no app
+traffic at the drop. All devices then appeared unavailable. One unconfirmed
+hypothesis is that the short timer armed a shutdown after an already-long idle
+period which restoring Never did not cancel. **Do not repeat short Auto-Off
+writes until this incident is understood.** A successful register read-back does
+not prove idle-shutdown behavior. Evidence: ignored `build/v28-lifecycle.jsonl`.
+
+Build 29 was installed and exercised from 23:02–23:08 UTC. Settings navigation,
+EQ drag/preset/Flat/reapply and restoration to [-1,+4,+2], and mode-editor unsaved
+state, Cancel, save 7 then restore 5, Wind Block off and Quiet lock behavior passed.
+Held-drag value-bubble feedback was not verified. A separate drop at 23:05:43 was
+CBError 6 (link supervision timeout, no app traffic) and reconnected in 18 seconds;
+it does not explain the earlier CBError 7 incident.
