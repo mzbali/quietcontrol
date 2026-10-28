@@ -899,10 +899,11 @@ final class QuietControlUITests: XCTestCase {
         let runIDMessage = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "QUIETCONTROL_TEST_RUN_ID")).firstMatch
         XCTAssertTrue(runIDMessage.waitForExistence(timeout: 5), "Invalid run IDs are named: \(error.label)")
         XCTAssertFalse(element("connection-status", in: app).exists, "No app session is constructed")
-        let attachment = XCTAttachment(string: "runID: \(invalidRun)\ninvalid runID case\n\(error.label)")
+        let attachment = XCTAttachment(string: "runID: \(invalidRun)\ninvalid runID case\n\(error.label)\n\(runIDMessage.label)")
         attachment.name = "journey-invalid-run"
         attachment.lifetime = .keepAlways
         add(attachment)
+        attachScreenshot(app, name: "invalid-run-error")
         app.terminate()
 
         let unknown = "invalid-\(UUID().uuidString)"
@@ -913,10 +914,11 @@ final class QuietControlUITests: XCTestCase {
         XCTAssertTrue(scenarioMessage.waitForExistence(timeout: 5),
                       "Unknown scenarios fail explicitly: \(unknownError.label)")
         XCTAssertFalse(element("connection-status", in: unknownApp).exists)
-        let unknownAttachment = XCTAttachment(string: "runID: \(unknown)\nunknown scenario case\n\(unknownError.label)")
+        let unknownAttachment = XCTAttachment(string: "runID: \(unknown)\nunknown scenario case\n\(unknownError.label)\n\(scenarioMessage.label)")
         unknownAttachment.name = "journey-invalid-scenario"
         unknownAttachment.lifetime = .keepAlways
         add(unknownAttachment)
+        attachScreenshot(unknownApp, name: "invalid-scenario-error")
     }
 
     func testConnectionInspectionIsExplicitlyUnavailableInSimulatorTests() {
