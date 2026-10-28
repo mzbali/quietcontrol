@@ -208,6 +208,25 @@ final class QuietControlSessionTests: XCTestCase {
 
     // MARK: - Wave 2: EQ, settings, devices and connection state
 
+    func testUnavailableRadioNeverStartsAutomaticConnection() async throws {
+        for (scenario, expected) in [(QCTestScenario.radioOff, QCConnectionState.bluetoothOff),
+                                     (.permissionDenied, .permissionNeeded)] {
+            let session = try makeSession(scenario: scenario, runID: "radio-unit-\(scenario.rawValue)-\(UUID().uuidString.prefix(8))")
+            defer { session.disconnect() }
+            let unavailable = await waitUntil { session.connectionState == expected }
+            XCTAssertTrue(unavailable)
+            session.startIfNeeded()
+            session.setForeground(false)
+            session.setForeground(true)
+            await Task.yield()
+            XCTAssertFalse(session.isConnected)
+            XCTAssertFalse(session.isWorking)
+            let transcript = try XCTUnwrap(session.testTranscript)
+            XCTAssertFalse(transcript.lowercased().contains("connect request"))
+            XCTAssertFalse(transcript.contains("outbound bmap"))
+        }
+    }
+
     private func occurrences(of needle: String, in text: String) -> Int {
         text.components(separatedBy: needle).count - 1
     }

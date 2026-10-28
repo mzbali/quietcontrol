@@ -272,7 +272,8 @@ final class QuietComfortSession: NSObject, ObservableObject {
 
     func startIfNeeded() {
         guard !isPreview, !isInspecting, lifecycle.wantsConnection, hasRememberedDevice,
-              !isConnected, !isEstablishing, !isWorking, reconnectTask == nil else { return }
+              !isConnected, !isEstablishing, !isWorking, reconnectTask == nil,
+              transport?.radioState == .poweredOn else { return }
         reconnectTask = Task { [weak self] in
             guard let self else { return }
             self.reconnectTask = nil

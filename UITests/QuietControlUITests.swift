@@ -166,6 +166,18 @@ final class QuietControlUITests: XCTestCase {
         text.components(separatedBy: needle).count - 1
     }
 
+    private func assertTranscriptOrder(_ tokens: [String], in transcript: String,
+                                       file: StaticString = #filePath, line: UInt = #line) {
+        var remaining = transcript[...]
+        for token in tokens {
+            guard let range = remaining.range(of: token) else {
+                XCTFail("Missing ordered transcript token: \(token)", file: file, line: line)
+                return
+            }
+            remaining = remaining[range.upperBound...]
+        }
+    }
+
     private func performAudit(_ app: XCUIApplication, context: String) {
         do {
             try app.performAccessibilityAudit(for: [.hitRegion, .sufficientElementDescription, .textClipped, .contrast]) { issue in
@@ -469,7 +481,7 @@ final class QuietControlUITests: XCTestCase {
         let swapToast = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Switched to Work laptop")).firstMatch
         XCTAssertTrue(swapToast.waitForExistence(timeout: 5), "The swap is reported")
 
-        let undo = app.buttons["feedback-toast"]
+        let undo = app.buttons["undo-swap"]
         XCTAssertTrue(undo.waitForExistence(timeout: 5), "The swap toast offers Undo")
         undo.tap()
         XCTAssertTrue(waitForValue(work, "Tap to switch"), "Undo disconnects the Work laptop")
@@ -484,6 +496,11 @@ final class QuietControlUITests: XCTestCase {
         if let undoRange {
             let after = log[undoRange.upperBound...]
             XCTAssertTrue(after.contains("outbound bmap 0401050700a1b2c3d4e502"), "Undo reconnects the MacBook")
+            assertTranscriptOrder([
+                "outbound bmap 0401050700a1b2c3d4e502",
+                "outbound bmap 04050106a1b2c3d4e502",
+                "inbound bmap 04050314a1b2c3d4e5020100"
+            ], in: String(after))
             XCTAssertTrue(after.contains("inbound bmap 04050314a1b2c3d4e5030000"), "Work laptop reads back disconnected")
         } else {
             XCTFail("Undo must disconnect the Work laptop")
@@ -558,7 +575,16 @@ final class QuietControlUITests: XCTestCase {
         XCTAssertTrue(log.contains("outbound bmap 0104020100"), "Auto-Off writes [1.4] = Never")
         XCTAssertTrue(log.contains("outbound bmap 1f05020100"), "Remember My Mode writes [31.5] = off")
         XCTAssertTrue(log.contains("outbound bmap 1f05020101"), "Remember My Mode writes [31.5] = on")
-        XCTAssertTrue(log.contains("inbound bmap 0104030100"), "Independent read confirms Auto-Off Never")
+        assertTranscriptOrder([
+            "outbound bmap 0104020114", "inbound bmap 0104030114",
+            "outbound bmap 01040100", "inbound bmap 0104030114",
+            "outbound bmap 0104020100", "inbound bmap 0104030100",
+            "outbound bmap 01040100", "inbound bmap 0104030100",
+            "outbound bmap 1f05020100", "inbound bmap 1f05030100",
+            "outbound bmap 1f050100", "inbound bmap 1f05030100",
+            "outbound bmap 1f05020101", "inbound bmap 1f05030101",
+            "outbound bmap 1f050100", "inbound bmap 1f05030101"
+        ], in: log)
         XCTAssertFalse(log.contains("outbound bmap 010e"), "[1.14] must never be written")
     }
 
@@ -648,6 +674,7 @@ final class QuietControlUITests: XCTestCase {
         let log = attachTranscript(app, runID: firstRun, note: "First run has no live values or writes")
         XCTAssertFalse(log.contains("outbound bmap"), "First run must not write to a radio")
         XCTAssertFalse(log.contains("inbound bmap"))
+        XCTAssertFalse(log.lowercased().contains("connect request"), "First run must not try a connection")
         closeDiagnostics(app)
         app.terminate()
 
@@ -661,6 +688,7 @@ final class QuietControlUITests: XCTestCase {
         XCTAssertFalse(element("battery-level", in: off).exists)
         let offLog = attachTranscript(off, runID: radioOff, note: "Bluetooth off radio state")
         XCTAssertFalse(offLog.contains("outbound bmap"), "No radio writes while Bluetooth is off")
+        XCTAssertFalse(offLog.lowercased().contains("connect request"), "Do not attempt a connection while Bluetooth is off")
         off.terminate()
 
         let denied = "firstrun-denied-\(UUID().uuidString)"
@@ -670,6 +698,7 @@ final class QuietControlUITests: XCTestCase {
         XCTAssertFalse(element("battery-level", in: deniedApp).exists)
         let deniedLog = attachTranscript(deniedApp, runID: denied, note: "Bluetooth permission denied")
         XCTAssertFalse(deniedLog.contains("outbound bmap"), "No radio writes without permission")
+        XCTAssertFalse(deniedLog.lowercased().contains("connect request"), "Do not attempt a connection without permission")
     }
 
     func testInvalidTestConfigurationFailsWithoutRadioFallback() {
