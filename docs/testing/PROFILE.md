@@ -14,8 +14,10 @@
   -scheme QuietControl -configuration Release -sdk iphoneos
   -destination 'generic/platform=iOS' -derivedDataPath build/VerificationRelease
   CODE_SIGNING_ALLOWED=NO build.
-- Session/UI: QuietControl.xctestplan on the QuietControl scheme contains seven
-  app-hosted session tests and four UI journeys at the reviewed foundation.
+- Session/UI: the integrated QuietControl.xctestplan currently contains15
+  app-hosted session tests and17UI journeys. Fault coverage will add tests.
+  The separately reviewed strict runner is present but its baseline manifest still
+  expects7session+4UI until the final integration; it must fail closed meanwhile.
   Use xcodebuild test -project QuietControl.xcodeproj -scheme QuietControl
   -testPlan QuietControl -destination 'platform=iOS Simulator,id=<owned-UUID>'
   -derivedDataPath build/<unique-run> -resultBundlePath build/<unique-result>.xcresult
