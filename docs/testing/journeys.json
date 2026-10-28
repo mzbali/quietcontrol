@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "description": "Native simulator verification manifest. Every executable Xcode test must appear exactly once. Extra manifest fields are additive; new UI/session tests must be added here before the runner will accept them.",
+  "synthetic": {
+    "peripheralUUID": "8A1B2C3D-4E5F-4061-8273-849506172839",
+    "manufacturer": "Bose Corporation",
+    "model": "884367-0100",
+    "firmware": "1.0.6-80+f5f219b",
+    "defaultsSuitePrefix": "uk.co.mzbali.quietcontrol.ui-tests.",
+    "devices": [
+      { "address": "a1 b2 c3 d4 e5 01", "name": "iPhone", "connected": true },
+      { "address": "a1 b2 c3 d4 e5 02", "name": "MacBook Pro", "connected": true },
+      { "address": "a1 b2 c3 d4 e5 03", "name": "Work laptop", "connected": false }
+    ]
+  },
+  "simulator": {
+    "deviceTypes": ["iPhone Duo", "iPhone 17", "iPhone 16"],
+    "runtime": "iOS 27.1",
+    "minimumRuntimeMajor": 17,
+    "compactDeviceTypes": ["iPhone SE (3rd generation)", "iPhone 16e"]
+  },
+  "session": {
+    "target": "QuietControlTests",
+    "tests": [
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testConnectedModeSwitchWritesLiteralPacketAndConfirmsWithIndependentGet()",
+        "label": "session-connected",
+        "run": { "prefix": "unit-", "scenario": "connected", "reset": true },
+        "expect": {
+          "snapshot": { "lastMode": 1, "eq": [-2, 4, 2] },
+          "peripheral": { "connected": true, "mode": 1, "eq": [-2, 4, 2], "multipoint": true },
+          "transcript": {
+            "scenarios": ["connected"],
+            "order": [
+              "outbound:1f0305020100",
+              "inbound:1f03030101",
+              "outbound:1f030100",
+              "inbound:1f03030101"
+            ],
+            "required": ["outbound:01070202fe00"]
+          }
+        }
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testRejectedModeKeepsQuietAndReportsExplicitFailure()",
+        "label": "session-rejected",
+        "run": { "prefix": "reject-", "scenario": "mode-rejected", "reset": true },
+        "expect": {
+          "snapshot": { "lastMode": 0, "eq": [-1, 4, 2] },
+          "peripheral": { "connected": true, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
+          "transcript": {
+            "scenarios": ["mode-rejected"],
+            "order": ["outbound:1f0305020100", "inbound:1f03040104"],
+            "forbidden": ["inbound:1f03030101"]
+          }
+        }
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testAcceptedButUnconfirmedModeDoesNotReportSuccess()",
+        "label": "session-unconfirmed",
+        "run": { "prefix": "unconf-", "scenario": "mode-unconfirmed", "reset": true },
+        "expect": {
+          "snapshot": { "lastMode": 0, "eq": [-1, 4, 2] },
+          "peripheral": { "connected": true, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
+          "transcript": {
+            "scenarios": ["mode-unconfirmed"],
+            "order": [
+              "outbound:1f0305020100",
+              "outbound:1f030100",
+              "inbound:1f03030100"
+            ],
+            "forbidden": ["inbound:1f03030101"]
+          }
+        }
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testOfflineCachedProfileHasNoLiveAuthority()",
+        "label": "session-offline",
+        "run": { "prefix": "offline-", "scenario": "offline-cached", "reset": false },
+        "expect": {
+          "snapshot": { "lastMode": 1, "eq": [-1, 4, 2] },
+          "peripheral": { "connected": false, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
+          "transcript": {
+            "scenarios": ["connected", "offline-cached"],
+            "order": ["outbound:1f0305020100", "inbound:1f03030101"],
+            "noOutboundScenarios": ["offline-cached"]
+          }
+        }
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testRefreshAndModeActionAreSerialized()",
+        "label": "session-serial",
+        "run": { "prefix": "serial-", "scenario": "connected", "reset": true },
+        "expect": {
+          "snapshot": { "lastMode": 1, "eq": [-1, 4, 2] },
+          "peripheral": { "connected": true, "mode": 1, "eq": [-1, 4, 2], "multipoint": true },
+          "transcript": {
+            "scenarios": ["connected"],
+            "order": [
+              "outbound:1f0305020100",
+              "inbound:1f03030101",
+              "outbound:1f030100",
+              "inbound:1f03030101"
+            ],
+            "forbiddenMessages": ["Protocol overlap"]
+          }
+        }
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testRadioLossCancelsPendingSetupAndAllowsAnotherConnectionAttempt()",
+        "label": "session-radio-loss",
+        "run": { "prefix": "pending-", "artifacts": false }
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testQuietWaitingClearsBusyWithoutReplacingPendingConnection()",
+        "label": "session-quiet-wait",
+        "run": { "prefix": "pending-", "artifacts": false }
+      }
+    ]
+  },
+  "journeys": [
+    {
+      "name": "modes",
+      "test": "QuietControlUITests/QuietControlUITests/testTappingAwareUsesRealControlAndConfirmsWithIndependentGet()",
+      "run": { "prefix": "aware-", "scenario": "connected", "reset": true },
+      "expect": {
+        "snapshot": { "lastMode": 1, "eq": [-1, 4, 2] },
+        "peripheral": { "connected": true, "mode": 1, "eq": [-1, 4, 2], "multipoint": true },
+        "transcript": {
+          "scenarios": ["connected"],
+          "order": [
+            "outbound:1f0305020100",
+            "inbound:1f03030101",
+            "outbound:1f030100",
+            "inbound:1f03030101"
+          ]
+        }
+      }
+    },
+    {
+      "name": "mode-rejected",
+      "test": "QuietControlUITests/QuietControlUITests/testRejectedModeShowsFailureAndKeepsQuietSelected()",
+      "run": { "prefix": "reject-", "scenario": "mode-rejected", "reset": true },
+      "expect": {
+        "snapshot": { "lastMode": 0, "eq": [-1, 4, 2] },
+        "peripheral": { "connected": true, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
+        "transcript": {
+          "scenarios": ["mode-rejected"],
+          "order": ["outbound:1f0305020100", "inbound:1f03040104"],
+          "forbidden": ["inbound:1f03030101"]
+        }
+      }
+    },
+    {
+      "name": "mode-unconfirmed",
+      "test": "QuietControlUITests/QuietControlUITests/testUnconfirmedModeShowsFailureAndKeepsQuietSelected()",
+      "run": { "prefix": "unconf-", "scenario": "mode-unconfirmed", "reset": true },
+      "expect": {
+        "snapshot": { "lastMode": 0, "eq": [-1, 4, 2] },
+        "peripheral": { "connected": true, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
+        "transcript": {
+          "scenarios": ["mode-unconfirmed"],
+          "order": [
+            "outbound:1f0305020100",
+            "outbound:1f030100",
+            "inbound:1f03030100"
+          ],
+          "forbidden": ["inbound:1f03030101"]
+        }
+      }
+    },
+    {
+      "name": "offline",
+      "test": "QuietControlUITests/QuietControlUITests/testConfirmedModePersistsAndOfflineRelaunchIsReadOnly()",
+      "run": { "prefix": "persist-", "scenario": "offline-cached", "reset": false },
+      "expect": {
+        "snapshot": { "lastMode": 1, "eq": [-1, 4, 2] },
+        "peripheral": { "connected": false, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
+        "transcript": {
+          "scenarios": ["connected", "offline-cached"],
+          "order": [
+            "outbound:1f0305020100",
+            "inbound:1f03030101"
+          ],
+          "noOutboundScenarios": ["offline-cached"]
+        }
+      }
+    }
+  ]
+}
