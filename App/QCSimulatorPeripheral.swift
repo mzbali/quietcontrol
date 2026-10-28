@@ -1,6 +1,54 @@
 #if DEBUG && targetEnvironment(simulator)
 import Foundation
 
+/// One bounded protocol fault for a simulated reply. Faults are armed on the
+/// request signature, after normal setup, and cover only the byte boundary:
+/// the production encoder, reassembler, decoder, matching and timeout remain.
+enum QCSimulatedFault: String {
+    case holdReply = "hold-reply"
+    case withholdReply = "withhold-reply"
+    case malformedEnvelope = "malformed-envelope"
+    case fragmentModeReply = "fragment-mode-reply"
+    case disconnectAfterReply = "disconnect-after-reply"
+    case processingAcknowledgement = "processing-acknowledgement"
+}
+
+/// Test-only fault plan shared with the session under test through the fixture.
+/// A rule is consumed by the next matching request, so setup traffic is untouched.
+@MainActor
+final class QCSimulatorFaults {
+    private struct Rule {
+        let block: UInt8
+        let function: UInt8
+        let operation: BMAPOperator?
+        let fault: QCSimulatedFault
+        var remaining: Int
+    }
+
+    private var rules: [Rule] = []
+    private(set) var armed: [String] = []
+
+    func arm(_ fault: QCSimulatedFault, block: UInt8, function: UInt8,
+             operation: BMAPOperator? = nil, times: Int = 1) {
+        rules.append(Rule(block: block, function: function, operation: operation,
+                          fault: fault, remaining: max(1, times)))
+        armed.append("\(fault.rawValue):[\(block).\(function)]:\(operation.map { String($0.rawValue) } ?? "*"):\(max(1, times))")
+    }
+
+    func take(block: UInt8, function: UInt8, operation: BMAPOperator) -> QCSimulatedFault? {
+        guard let index = rules.firstIndex(where: {
+            $0.remaining > 0 && $0.block == block && $0.function == function
+                && ($0.operation == nil || $0.operation == operation)
+        }) else { return nil }
+        let fault = rules[index].fault
+        rules[index].remaining -= 1
+        if rules[index].remaining <= 0 { rules.remove(at: index) }
+        return fault
+    }
+
+    func reset() { rules.removeAll(); armed.removeAll() }
+}
+
 /// Stateful synthetic QuietComfort. It receives the same segmented Bose envelopes
 /// and BMAP frames as the live transport and answers through the same encoder and
 /// reassembler. Unknown or unsupported functions return an explicit device error;
@@ -45,6 +93,23 @@ final class QCSimulatorPeripheral: QCByteTransport {
     private var pendingConnect: CheckedContinuation<QCTransportLink, Error>?
     private var connectRequests = 0
 
+    /// Test-only fault plan. A transport generation belongs to one connection;
+    /// delayed replies capture it and are dropped once the link moves on.
+    let faults = QCSimulatorFaults()
+    private(set) var generation = 0
+
+    private enum Held {
+        case frames([BMAPFrame])
+        case segments([Data])
+    }
+    private struct HeldReply {
+        let generation: Int
+        let content: Held
+        let note: String
+    }
+    private var heldReplies: [HeldReply] = []
+    var heldReplyCount: Int { heldReplies.count }
+
     static let workLaptopAddress = Data([0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0x03])
     static let macBookAddress = Data([0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0x02])
 
@@ -62,6 +127,9 @@ final class QCSimulatorPeripheral: QCByteTransport {
         self.evidence = evidence
         self.peripheralID = peripheralID
         firmware = scenario.firmware
+        if scenario == .preferenceRecovery || scenario == .preferenceRecoveryRejected {
+            preferences["rememberMode"] = Data([0])
+        }
         publishState(connected: false)
     }
 
@@ -102,6 +170,8 @@ final class QCSimulatorPeripheral: QCByteTransport {
             }
         }
         try? await Task.sleep(nanoseconds: 30_000_000)
+        generation += 1
+        evidence.event("Opened simulated transport generation \(generation) for run \(runID).")
         evidence.event("Connect request \(connectRequests) completed for run \(runID).")
         isConnected = true
         identifier = peripheralID
@@ -136,14 +206,59 @@ final class QCSimulatorPeripheral: QCByteTransport {
     }
 
     func close() {
+        closeGeneration(reason: "the session closed the link")
+    }
+
+    private func closeGeneration(reason: String) {
+        let wasOpen = isConnected || identifier != nil || pendingConnect != nil
         let pending = pendingConnect
         pendingConnect = nil
         if pending != nil { evidence.event("Closed the pending simulated connection for run \(runID).") }
+        let closedGeneration = generation
         isConnected = false
         identifier = nil
         reassembler.reset()
+        repliesInFlight = 0
         publishState(connected: false)
+        if wasOpen { evidence.event("Closed simulated transport generation \(closedGeneration): \(reason).") }
         pending?.resume(throwing: QCSessionError.disconnected)
+    }
+
+    /// Test-only radio transition. The real session radio handling still runs.
+    func setRadioStateForTesting(_ state: QCTransportRadioState) {
+        radioState = state
+        evidence.event("Test radio state set to \(state).")
+        delegate?.transport(self, radioStateChanged: state)
+    }
+
+    /// Release the oldest held reply. A reply queued for an older generation is
+    /// dropped at this boundary, before the session decoder can see it.
+    func releaseHeldReply() {
+        guard !heldReplies.isEmpty else {
+            evidence.event("No held simulated reply to release.")
+            return
+        }
+        let held = heldReplies.removeFirst()
+        guard held.generation == generation, isConnected else {
+            evidence.event("Dropped old-generation simulated reply queued in generation \(held.generation) at generation \(generation): \(held.note).")
+            return
+        }
+        evidence.event("Released held reply for generation \(generation): \(held.note).")
+        switch held.content {
+        case .frames(let frames):
+            for frame in frames { emit(frame) }
+        case .segments(let segments):
+            for segment in segments { emit(segment) }
+        }
+        if repliesInFlight > 0 { repliesInFlight -= 1 }
+    }
+
+    /// Deliver a valid notification through the same delegate receive path, while
+    /// a different request is pending.
+    func injectNotification(_ frame: BMAPFrame) {
+        guard isConnected else { return }
+        evidence.event("Injected unrelated notification [\(frame.block).\(frame.function)] op \(frame.operation.rawValue) in generation \(generation).")
+        emit(frame)
     }
 
     // MARK: - Request handling
@@ -154,20 +269,32 @@ final class QCSimulatorPeripheral: QCByteTransport {
             deliver([errorFrame(for: frame, code: 4)])
             return
         }
+        let fault = faults.take(block: frame.block, function: frame.function, operation: frame.operation)
         let responseFrames: [BMAPFrame]
-        do {
-            responseFrames = try replies(for: frame)
-        } catch {
-            evidence.event("Simulated command failed: \(error.localizedDescription)")
-            deliver([errorFrame(for: frame, code: 4)])
-            return
+        if fault == .processingAcknowledgement {
+            if frame.block == 31, frame.function == 3, frame.operation == .start,
+               let requested = frame.payload.first, modeConfigurations.keys.contains(requested) {
+                mode = requested
+                publishState(connected: true)
+                evidence.event("Simulated device accepted mode \(requested) asynchronously; reply is PROCESSING only.")
+            }
+            evidence.event("Acknowledged [\(frame.block).\(frame.function)] with BMAP PROCESSING only; no state was confirmed to the session.")
+            responseFrames = [(try? reply(frame, .processing, Data()))].compactMap { $0 }
+        } else {
+            do {
+                responseFrames = try replies(for: frame)
+            } catch {
+                evidence.event("Simulated command failed: \(error.localizedDescription)")
+                deliver([errorFrame(for: frame, code: 4)], behavior: fault)
+                return
+            }
         }
         guard !responseFrames.isEmpty else {
             evidence.event("No simulated reply for [\(frame.block).\(frame.function)].")
-            deliver([errorFrame(for: frame, code: 4)])
+            deliver([errorFrame(for: frame, code: 4)], behavior: fault)
             return
         }
-        deliver(responseFrames)
+        deliver(responseFrames, behavior: fault)
     }
 
     private func replies(for frame: BMAPFrame) throws -> [BMAPFrame] {
@@ -260,6 +387,10 @@ final class QCSimulatorPeripheral: QCByteTransport {
             return [try reply(frame, .status, try preference(for: frame))]
         case (1, 3, .setGet), (1, 11, .setGet), (1, 9, .setGet), (1, 4, .setGet), (31, 5, .setGet):
             let name = preferenceName(block: frame.block, function: frame.function)
+            if name == "rememberMode" && scenario == .preferenceRecoveryRejected {
+                evidence.event("Rejected one simulated rememberMode restoration write; the stored value is unchanged.")
+                return [try reply(frame, .error, Data([4]))]
+            }
             preferences[name] = frame.payload
             evidence.event("Simulated \(name) write stored \(frame.payload.hexString).")
             publishState(connected: true)
@@ -317,24 +448,65 @@ final class QCSimulatorPeripheral: QCByteTransport {
             .first { $0.value == Int(function) }?.key ?? "unknown"
     }
 
-    private func deliver(_ frames: [BMAPFrame]) {
+    private func deliver(_ frames: [BMAPFrame], behavior: QCSimulatedFault? = nil) {
         guard !frames.isEmpty else { return }
-        repliesInFlight += frames.count
+        switch behavior {
+        case .withholdReply:
+            evidence.event("Withheld simulated reply in generation \(generation); only the session timeout can finish it.")
+        case .malformedEnvelope:
+            evidence.event("Injecting a malformed Bose envelope in generation \(generation).")
+            // Maximum segment 1, index 2: a literal out-of-order Bose envelope.
+            let malformed = Data([0x12, 0x1f, 0x03, 0x00, 0x00])
+            evidence.record(direction: "inbound", kind: "segment", bytes: malformed)
+            delegate?.transport(self, didReceive: malformed)
+        case .holdReply:
+            repliesInFlight += 1
+            heldReplies.append(HeldReply(generation: generation, content: .frames(frames),
+                                         note: "held request reply"))
+            evidence.event("Held simulated reply in generation \(generation); the request remains pending.")
+        case .fragmentModeReply:
+            let coalesced = frames.reduce(Data()) { $0 + $1.encoded }
+            guard let segments = try? BoseBLEFraming.segments(for: coalesced), let first = segments.first else { return }
+            repliesInFlight += 1
+            evidence.event("Fragmenting coalesced mode reply into \(segments.count) segments; delivered 1 and held \(segments.count - 1) in generation \(generation).")
+            evidence.record(direction: "inbound", kind: "segment", bytes: first)
+            delegate?.transport(self, didReceive: first)
+            heldReplies.append(HeldReply(generation: generation, content: .segments(Array(segments.dropFirst())),
+                                         note: "mode reply remainder"))
+        case .disconnectAfterReply:
+            for frame in frames { emit(frame) }
+            closeGeneration(reason: "a fault disconnected the link after the accepted write reply")
+            delegate?.transport(self, didDisconnect: QCSessionError.disconnected)
+        default:
+            repliesInFlight += 1
+            dispatch(frames, generation: generation)
+        }
+    }
+
+    private func dispatch(_ frames: [BMAPFrame], generation expected: Int) {
         Task { @MainActor [weak self] in
             guard let self else { return }
             for frame in frames {
                 try? await Task.sleep(nanoseconds: 8_000_000)
-                guard self.isConnected else { return }
-                let encoded = frame.encoded
-                self.evidence.record(direction: "inbound", kind: "bmap", bytes: encoded)
-                guard let segments = try? BoseBLEFraming.segments(for: encoded) else { continue }
-                for segment in segments {
-                    self.evidence.record(direction: "inbound", kind: "segment", bytes: segment)
-                    self.delegate?.transport(self, didReceive: segment)
+                guard self.generation == expected, self.isConnected else {
+                    self.evidence.event("Dropped simulated reply from generation \(expected) at generation \(self.generation).")
+                    return
                 }
+                self.emit(frame)
             }
-            self.repliesInFlight = 0
+            if self.repliesInFlight > 0 { self.repliesInFlight -= 1 }
         }
+    }
+
+    private func emit(_ frame: BMAPFrame) {
+        evidence.record(direction: "inbound", kind: "bmap", bytes: frame.encoded)
+        guard let segments = try? BoseBLEFraming.segments(for: frame.encoded) else { return }
+        for segment in segments { emit(segment) }
+    }
+
+    private func emit(_ segment: Data) {
+        evidence.record(direction: "inbound", kind: "segment", bytes: segment)
+        delegate?.transport(self, didReceive: segment)
     }
 
     private func publishState(connected: Bool) {
