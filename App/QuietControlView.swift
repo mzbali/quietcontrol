@@ -989,6 +989,7 @@ private struct ModeEditorView: View {
     @ObservedObject var session: QuietComfortSession
     let selected: ListeningMode
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var strength: Double
     @State private var wind: Bool
     @State private var dirty = false
@@ -1044,7 +1045,9 @@ private struct ModeEditorView: View {
                             .accessibilityIdentifier("mode-locked-note")
                     }
                     if let error { Text(error).font(.footnote).foregroundStyle(.red) }
-                }.padding(20).frame(maxWidth: 620).frame(maxWidth: .infinity)
+                }.padding(20)
+                    .padding(.bottom, dynamicTypeSize.isAccessibilitySize ? 32 : 0)
+                    .frame(maxWidth: 620).frame(maxWidth: .infinity)
             }
             .safeAreaInset(edge: .bottom) {
                 if live.editable {
@@ -1070,6 +1073,7 @@ private struct ModeEditorView: View {
             .toolbar {
                 if live.editable {
                     ToolbarItem(placement: .confirmationAction) { Button("Save", action: save).fontWeight(.semibold).disabled(!enabled || !dirty)
+                        .foregroundStyle(QCTheme.toolbarText)
                         .accessibilityIdentifier("mode-save-toolbar") }
                 }
             }
@@ -1085,6 +1089,7 @@ private struct ModeEditorView: View {
                             .font(.body)
                             .foregroundStyle(QCTheme.accent)
                             .padding(.horizontal, 4).padding(.vertical, 10)
+                            .frame(minHeight: 44)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -1219,15 +1224,22 @@ private struct HeadphoneSettingsView: View {
             List {
                 Section {
                     Button { showingInfo = true } label: {
-                        HStack(spacing: 14) {
+                        let layout = dynamicTypeSize.isAccessibilitySize
+                            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+                            : AnyLayout(HStackLayout(spacing: 14))
+                        layout {
                             Image(systemName: "headphones").font(.system(size: 24, weight: .light)).foregroundStyle(QCTheme.accent)
                                 .frame(width: 48, height: 48).background(QCTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Bose QuietComfort").font(.headline).foregroundStyle(.primary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .accessibilityIdentifier("settings-headphone-title")
                                 Text(identity).font(.caption).foregroundStyle(QCTheme.secondaryText)
                             }
-                            Spacer(minLength: 0)
-                            Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+                            if !dynamicTypeSize.isAccessibilitySize {
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+                            }
                         }.padding(.vertical, 4)
                     }.tint(.primary).accessibilityHint("Shows model, firmware and open-source licenses")
                 }
@@ -1343,6 +1355,7 @@ private struct HeadphoneSettingsView: View {
                                 .font(.body)
                                 .foregroundStyle(QCTheme.accent)
                                 .padding(.horizontal, 4).padding(.vertical, 10)
+                                .frame(minHeight: 44)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -1403,8 +1416,11 @@ private extension HeadphoneSettingsView {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).foregroundStyle(.primary)
                 if let detail { Text(detail).font(.caption).foregroundStyle(QCTheme.secondaryText) }
+                if dynamicTypeSize.isAccessibilitySize, let value {
+                    Text(value).foregroundStyle(QCTheme.secondaryText).fixedSize(horizontal: false, vertical: true)
+                }
             }
-            if let value { Spacer(minLength: 8); Text(value).foregroundStyle(QCTheme.secondaryText) }
+            if !dynamicTypeSize.isAccessibilitySize, let value { Spacer(minLength: 8); Text(value).foregroundStyle(QCTheme.secondaryText) }
         }
     }
 }

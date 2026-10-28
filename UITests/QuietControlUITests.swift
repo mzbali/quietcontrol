@@ -270,11 +270,10 @@ final class QuietControlUITests: XCTestCase {
             "auditTypes": ["hitRegion", "sufficientElementDescription", "textClipped", "contrast"],
             "counts": [
                 "reported": records.count,
-                "accepted": records.count - ignored - failed.count,
                 "ignored": ignored,
                 "failed": failed.count
             ],
-            "countsNote": "accepted = issues resolved by the policy without an exemption; ignored = disabled-element contrast exemptions; failed = every other reported issue (must be 0).",
+            "countsNote": "reported = ignored + failed; ignored = disabled-element contrast exemptions; failed = every other reported issue (must be 0).",
             "policy": [
                 "substringExemptions": false,
                 "coordinateExemptions": false,
@@ -298,6 +297,37 @@ final class QuietControlUITests: XCTestCase {
     private func assertAuditsClean() {
         XCTAssertTrue(auditFailures.isEmpty,
                       "Enabled accessibility issues must fail the audit: \(auditFailures.joined(separator: "; "))")
+    }
+
+    private func prepareDirtyEditorAudit(_ app: XCUIApplication, largeText: Bool = false) {
+        let strength = element("mode-strength", in: app)
+        strength.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.5)).tap()
+        XCTAssertTrue(waitForValue(strength, "7 of 10"), "Audit a dirty editor so Save is enabled")
+        let toolbarSave = app.buttons["mode-save-toolbar"]
+        let bottomSave = element("mode-save-bottom", in: app)
+        XCTAssertTrue(toolbarSave.isEnabled && toolbarSave.isHittable, "Enabled toolbar Save must be included in the audit")
+        XCTAssertTrue(bottomSave.isEnabled)
+        guard largeText else { return }
+
+        let title = app.staticTexts["Wind Block"]
+        let detail = app.staticTexts["For outdoors. Locks cancelling to max."]
+        let cancel = app.buttons["mode-cancel"]
+        func isClear() -> Bool {
+            title.exists && detail.exists
+                && title.frame.minY >= cancel.frame.maxY + 8
+                && detail.frame.maxY <= bottomSave.frame.minY - 16
+                && detail.isHittable
+        }
+        for _ in 0..<5 {
+            if isClear() { break }
+            let scroll = app.scrollViews.firstMatch
+            // Drag the empty left gutter, away from the adjustable strength meter.
+            scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.8))
+                .press(forDuration: 0.05, thenDragTo: scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.25)))
+        }
+        XCTAssertTrue(isClear(), "Wind Block labels must be fully visible between dismiss and pinned Save before auditing: title=\(title.frame), detail=\(detail.frame), save=\(bottomSave.frame)")
+        XCTAssertTrue(toolbarSave.isEnabled && toolbarSave.isHittable)
+        XCTAssertEqual(strength.value as? String, "7 of 10", "Scrolling must not adjust the meter")
     }
 
     private func attachScreenshot(_ app: XCUIApplication, name: String) {
@@ -872,6 +902,7 @@ final class QuietControlUITests: XCTestCase {
         XCTAssertEqual(element("mode-strength", in: light).value as? String, "5 of 10",
                        "The adjustable strength exposes its value")
         XCTAssertTrue(element("mode-save-bottom", in: light).exists, "The bottom Save control is reachable")
+        prepareDirtyEditorAudit(light)
         performAudit(light, context: "editor-light")
         attachScreenshot(light, name: "editor-light")
         light.buttons["mode-cancel"].tap()
@@ -906,6 +937,7 @@ final class QuietControlUITests: XCTestCase {
 
         openEditor(dark, mode: "mode-2", title: "Focus")
         XCTAssertEqual(element("mode-strength", in: dark).value as? String, "5 of 10")
+        prepareDirtyEditorAudit(dark)
         performAudit(dark, context: "editor-dark")
         attachScreenshot(dark, name: "editor-dark")
         dark.buttons["mode-cancel"].tap()
@@ -942,10 +974,8 @@ final class QuietControlUITests: XCTestCase {
         openEditor(large, mode: "mode-2", title: "Focus")
         XCTAssertEqual(element("mode-strength", in: large).value as? String, "5 of 10")
         XCTAssertTrue(element("mode-save-bottom", in: large).exists)
-        // At accessibility sizes the pinned bottom action covers the initial
-        // bottom edge of the scroll content. Scroll the remaining rows into the
-        // clear before auditing so no label is sampled through the action chrome.
-        large.swipeUp()
+        // Assert actual clear geometry rather than assuming one swipe was enough.
+        prepareDirtyEditorAudit(large, largeText: true)
         performAudit(large, context: "editor-large-text")
         attachScreenshot(large, name: "editor-large-text")
         large.buttons["mode-cancel"].tap()
