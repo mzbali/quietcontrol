@@ -303,9 +303,9 @@ final class QuietControlUITests: XCTestCase {
         let strength = element("mode-strength", in: app)
         strength.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.5)).tap()
         XCTAssertTrue(waitForValue(strength, "7 of 10"), "Audit a dirty editor so Save is enabled")
-        let toolbarSave = app.buttons["mode-save-toolbar"]
+        let topSave = app.buttons["mode-save-toolbar"]
         let bottomSave = element("mode-save-bottom", in: app)
-        XCTAssertTrue(toolbarSave.isEnabled && toolbarSave.isHittable, "Enabled toolbar Save must be included in the audit")
+        XCTAssertTrue(topSave.isEnabled && topSave.isHittable, "Enabled top Save must be included in the audit")
         XCTAssertTrue(bottomSave.isEnabled)
         guard largeText else { return }
 
@@ -326,7 +326,7 @@ final class QuietControlUITests: XCTestCase {
                 .press(forDuration: 0.05, thenDragTo: scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.25)))
         }
         XCTAssertTrue(isClear(), "Wind Block labels must be fully visible between dismiss and pinned Save before auditing: title=\(title.frame), detail=\(detail.frame), save=\(bottomSave.frame)")
-        XCTAssertTrue(toolbarSave.isEnabled && toolbarSave.isHittable)
+        XCTAssertTrue(topSave.isEnabled && topSave.isHittable, "Pinned top Save stays available after scrolling")
         XCTAssertEqual(strength.value as? String, "7 of 10", "Scrolling must not adjust the meter")
     }
 
