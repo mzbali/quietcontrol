@@ -598,6 +598,7 @@ final class QuietControlSessionTests: XCTestCase {
         XCTAssertEqual(session.proof.events.filter { $0.message.hasPrefix("RX 1f 06 03 2f ") }.count,
                        decodedModesBefore, "The partial segment must not decode a mode frame")
 
+        session.recordTestEvent("Fragmented mode partial checkpoint before remainder release.")
         simulator.releaseHeldReply()
         await refresh.value
         XCTAssertFalse(session.isWorking)

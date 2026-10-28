@@ -1228,6 +1228,7 @@
                 "order": [
                   "outbound:1f010500",
                   "event:Fragmenting coalesced mode reply into 9 segments",
+                  "event:Fragmented mode partial checkpoint before remainder release.",
                   "event:Released held reply for generation 1: mode reply remainder"
                 ],
                 "segmentHeaders": [
@@ -1255,7 +1256,10 @@
               },
               "lifecycle": {
                 "rxPrefix": "1f 06 03 2f",
-                "expectedTotal": 6
+                "beforeEvent": "Test event: Fragmented mode partial checkpoint before remainder release.",
+                "afterEvent": "Test event: Fragmented mode decoder observed exactly 3 new RX 1f06032f frames after release; none while partial.",
+                "expectedBefore": 3,
+                "expectedAfter": 6
               }
             }
           }
@@ -2173,7 +2177,32 @@
                 {
                   "token": "outbound:010702020701",
                   "equals": 2
+                },
+                {
+                  "token": "outbound:01070100",
+                  "equals": 3,
+                  "after": "event:eq presets loaded 1: Mine"
+                },
+                {
+                  "token": "inbound:0107030cf60aff00f60a0701f60a0202",
+                  "equals": 4,
+                  "after": "event:eq presets loaded 1: Mine"
                 }
+              ],
+              "order": [
+                "event:eq presets loaded 1: Mine",
+                "outbound:01070202ff00",
+                "inbound:0107030cf60aff00f60a0401f60a0202",
+                "outbound:01070100",
+                "inbound:0107030cf60aff00f60a0401f60a0202",
+                "outbound:010702020701",
+                "inbound:0107030cf60aff00f60a0701f60a0202",
+                "outbound:01070100",
+                "inbound:0107030cf60aff00f60a0701f60a0202",
+                "outbound:010702020202",
+                "inbound:0107030cf60aff00f60a0701f60a0202",
+                "outbound:01070100",
+                "inbound:0107030cf60aff00f60a0701f60a0202"
               ]
             }
           }
@@ -2242,8 +2271,27 @@
                 },
                 {
                   "token": "outbound:1f030100",
-                  "atLeast": 1
+                  "equals": 1,
+                  "after": "outbound:1f0602*",
+                  "before": "outbound:1f010500"
+                },
+                {
+                  "token": "inbound:1f06032f02000d010100466f637573000000000000000000000000000000000000000000000000000000000000000300000000",
+                  "equals": 1,
+                  "after": [
+                    "outbound:1f0602*",
+                    "outbound:1f010500"
+                  ],
+                  "before": "outbound:*"
                 }
+              ],
+              "order": [
+                "outbound:1f0602*",
+                "inbound:1f06032f02000d010100466f637573000000000000000000000000000000000000000000000000000000000000000300000000",
+                "outbound:1f030100",
+                "inbound:1f03030100",
+                "outbound:1f010500",
+                "inbound:1f06032f02000d010100466f637573000000000000000000000000000000000000000000000000000000000000000300000000"
               ]
             }
           }
