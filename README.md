@@ -88,6 +88,13 @@ claim QC45, Ultra or earbud support.
 
 ## Install and run
 
+Before installing an updated app build, run `./scripts/verify.sh preinstall`.
+Routine tests run on the Mac's simulator, leaving your real phone available.
+iPhone Mirroring is reserved for specific device-only investigations or requested
+hardware acceptance. After the gate passes and installation is authorized, use
+the app normally and report anything wrong; a separate Mirroring QA session is
+not required. See [the testing policy and commands](docs/testing/README.md).
+
 1. Open `QuietControl.xcodeproj` in Xcode and sign in under **Settings → Accounts**.
 2. Copy `Configuration/Local.xcconfig.example` to `Configuration/Local.xcconfig`
    and enter your Developer team ID, or select a team in Signing & Capabilities.

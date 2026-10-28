@@ -9,6 +9,35 @@ deploy anything.
 The design and acceptance criteria are in [PLAN.md](PLAN.md); the local toolchain
 and physical limits are in [PROFILE.md](PROFILE.md).
 
+## Default policy: keep the real phone available
+
+Routine development and regression testing use the Mac's simulator. The user
+keeps using their real iPhone during these runs; they do not need to leave it
+unlocked, idle or available to computer use. iPhone Mirroring is not a routine
+test requirement or an extra gate before receiving a tested build.
+
+Use focused checks during development and require the full
+`./scripts/verify.sh preinstall` gate before installing an app build. Once it
+passes for the source being installed, proceed with an already-authorized
+installation. The user can then use the app normally, check actual headphone
+behavior and report bugs. Passing tests does not create installation permission;
+installation may need brief device interaction, but extended phone QA is optional.
+
+The user's phone target is **iOS 27**; the completed simulator acceptance used
+**iOS 27.1**. The app's iOS 17 deployment minimum is a separate compatibility
+limit. Report the runtime actually tested instead of confusing the two.
+
+Reserve real-phone computer use or Mirroring for a concrete device-only bug or
+explicit hardware acceptance. Explain why the phone is needed and coordinate a
+bounded session. Simulator evidence cannot establish physical BLE, audible output,
+firmware timing, buttons or background behavior; report those limits without
+requiring a complete hardware test campaign before each authorized installation.
+Failing tests and known relevant defects still need to be addressed.
+
+For documentation-only edits, validate the documentation; do not run the full
+native suite merely to restate this policy. Agent instructions live in the repo's
+[AGENTS.md](../../AGENTS.md), so new threads and worktrees inherit this workflow.
+
 ## Commands
 
 ```sh
