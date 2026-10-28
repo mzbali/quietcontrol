@@ -472,6 +472,16 @@ final class QuietControlSessionTests: XCTestCase {
         XCTAssertFalse(transcript.contains("inbound bmap 1f03030101"), "No confirmation without the matching GET reply")
         XCTAssertTrue(transcript.contains("Withheld simulated reply"))
         XCTAssertFalse(transcript.contains("Protocol overlap"))
+        let set = try XCTUnwrap(transcript.range(of: "outbound bmap 1f0305020100"))
+        let actionTranscript = String(transcript[set.lowerBound...])
+        XCTAssertEqual(occurrencesIn(actionTranscript, "outbound bmap 1f0305020100"), 1)
+        XCTAssertEqual(occurrencesIn(actionTranscript, "outbound bmap 1f030100"), 1,
+                       "Exactly one independent GET; no retry while its reply is withheld")
+        let withheld = try XCTUnwrap(actionTranscript.range(of: "Withheld simulated reply"))
+        let closed = try XCTUnwrap(actionTranscript.range(of: "Closed simulated transport generation",
+            range: withheld.upperBound..<actionTranscript.endIndex))
+        XCTAssertFalse(actionTranscript[withheld.upperBound..<closed.lowerBound].contains("outbound bmap"),
+                       "No command may overlap the withheld request before timeout closes the link")
 
         let retained = try XCTUnwrap(savedSnapshot(session.environment))
         XCTAssertEqual(retained.lastMode, 0, "The last confirmed snapshot must not advance")
@@ -542,10 +552,14 @@ final class QuietControlSessionTests: XCTestCase {
         let baseline = try XCTUnwrap(savedSnapshot(session.environment))
 
         simulator.faults.arm(.malformedEnvelope, block: 2, function: 2, operation: .get)
+        let started = Date()
         await session.refresh()
+        let elapsed = Date().timeIntervalSince(started)
 
         XCTAssertFalse(session.isConnected, "A framing error must invalidate the link")
-        XCTAssertNotNil(session.failure)
+        XCTAssertEqual(session.failure, BLEFramingError.invalidSegmentIndex.localizedDescription)
+        XCTAssertLessThan(elapsed, session.environment.timing.commandTimeout - 0.1,
+                          "A literal framing error must fail before the request timeout")
         XCTAssertEqual(session.mode, 0)
         XCTAssertEqual(session.eq.map(\.value), [-1, 4, 2])
         XCTAssertFalse(session.hasLiveDeviceList)
@@ -572,6 +586,7 @@ final class QuietControlSessionTests: XCTestCase {
         XCTAssertEqual(session.modes.map(\.index), [0, 1, 2])
         let baseline = try XCTUnwrap(savedSnapshot(session.environment))
 
+        let decodedModesBefore = session.proof.events.filter { $0.message.hasPrefix("RX 1f 06 03 2f ") }.count
         simulator.faults.arm(.fragmentModeReply, block: 31, function: 1, operation: .start)
         let refresh = Task { await session.refreshModes() }
         let partial = await waitUntil { simulator.heldReplyCount == 1 }
@@ -580,6 +595,8 @@ final class QuietControlSessionTests: XCTestCase {
         XCTAssertEqual(session.modes.map(\.index), [0, 1, 2], "Partial bytes cannot complete a profile")
         XCTAssertEqual(try XCTUnwrap(savedSnapshot(session.environment)).modes.map(\.index),
                        baseline.modes.map(\.index), "No partial profile may be persisted")
+        XCTAssertEqual(session.proof.events.filter { $0.message.hasPrefix("RX 1f 06 03 2f ") }.count,
+                       decodedModesBefore, "The partial segment must not decode a mode frame")
 
         simulator.releaseHeldReply()
         await refresh.value
@@ -597,7 +614,9 @@ final class QuietControlSessionTests: XCTestCase {
         let transcript = try XCTUnwrap(session.testTranscript)
         XCTAssertTrue(transcript.contains("Fragmenting coalesced mode reply into 9 segments"), "A single multi-segment reply was held")
         XCTAssertTrue(transcript.contains("Released held reply"))
-        XCTAssertTrue(transcript.contains("inbound bmap 1f06032f"), "The real 47-byte mode configuration crossed the receive path")
+        XCTAssertEqual(session.proof.events.filter { $0.message.hasPrefix("RX 1f 06 03 2f ") }.count,
+                       decodedModesBefore + 3, "All three faulted coalesced mode frames must cross the real decoder")
+        session.recordTestEvent("Fragmented mode decoder observed exactly 3 new RX 1f06032f frames after release; none while partial.")
         XCTAssertEqual(try XCTUnwrap(savedSnapshot(session.environment)).modes.map(\.index), [0, 1, 2])
     }
 
@@ -737,8 +756,10 @@ final class QuietControlSessionTests: XCTestCase {
         // Wrong firmware: the checkpoint belongs to another build, so nothing is written.
         let mismatchRun = "fault-pref-fw-\(UUID().uuidString)"
         var mismatchJournal: URL?
+        var mismatchJournalBytes: Data?
         let mismatch = try makeSession(scenario: .preferenceRecovery, runID: mismatchRun) { environment in
             mismatchJournal = try seedPreferenceJournal(environment, firmware: "9.9.9-1+wrong")
+            mismatchJournalBytes = try Data(contentsOf: XCTUnwrap(mismatchJournal))
         }
         defer { mismatch.disconnect() }
         let mismatchFailed = await waitUntil { mismatch.failure != nil && !mismatch.isWorking }
@@ -747,7 +768,8 @@ final class QuietControlSessionTests: XCTestCase {
         XCTAssertFalse(mismatch.hasVerifiedDirectControl)
         XCTAssertTrue(try XCTUnwrap(mismatch.failure).contains("different QC or firmware"))
         let mismatchURL = try XCTUnwrap(mismatchJournal)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: mismatchURL.path), "A mismatch retains the checkpoint")
+        XCTAssertEqual(try Data(contentsOf: mismatchURL), try XCTUnwrap(mismatchJournalBytes),
+                       "A firmware mismatch retains the exact checkpoint bytes")
         let mismatchTranscript = try XCTUnwrap(mismatch.testTranscript)
         XCTAssertFalse(mismatchTranscript.contains("outbound bmap 1f0502"), "No restoration write on mismatch")
         XCTAssertFalse(mismatchTranscript.contains("outbound bmap 010302"), "No voice-prompt write on mismatch")
@@ -755,22 +777,29 @@ final class QuietControlSessionTests: XCTestCase {
         // Wrong device: same firmware, different synthetic peripheral identity.
         let deviceRun = "fault-pref-dev-\(UUID().uuidString)"
         var deviceJournal: URL?
+        var deviceJournalBytes: Data?
         let wrongDevice = try makeSession(scenario: .preferenceRecovery, runID: deviceRun) { environment in
             deviceJournal = try seedPreferenceJournal(environment, peripheral: UUID())
+            deviceJournalBytes = try Data(contentsOf: XCTUnwrap(deviceJournal))
         }
         defer { wrongDevice.disconnect() }
         let deviceFailed = await waitUntil { wrongDevice.failure != nil && !wrongDevice.isWorking }
         XCTAssertTrue(deviceFailed)
         XCTAssertFalse(wrongDevice.isConnected)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(deviceJournal).path))
+        XCTAssertFalse(wrongDevice.hasVerifiedDirectControl)
+        XCTAssertTrue(try XCTUnwrap(wrongDevice.failure).contains("different QC or firmware"))
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(deviceJournal)), try XCTUnwrap(deviceJournalBytes),
+                       "A device mismatch retains the exact checkpoint bytes")
         let deviceTranscript = try XCTUnwrap(wrongDevice.testTranscript)
         XCTAssertFalse(deviceTranscript.contains("outbound bmap 1f0502"))
 
         // Same firmware, device rejects the restoration: one attempt per app session.
         let rejectedRun = "fault-pref-rejected-\(UUID().uuidString)"
         var rejectedJournal: URL?
+        var rejectedJournalBytes: Data?
         let rejected = try makeSession(scenario: .preferenceRecoveryRejected, runID: rejectedRun) { environment in
             rejectedJournal = try seedPreferenceJournal(environment)
+            rejectedJournalBytes = try Data(contentsOf: XCTUnwrap(rejectedJournal))
         }
         defer { rejected.disconnect() }
         let rejectedFailed = await waitUntil { rejected.failure != nil && !rejected.isWorking }
@@ -780,7 +809,8 @@ final class QuietControlSessionTests: XCTestCase {
         let firstFailure = try XCTUnwrap(rejected.failure)
         XCTAssertTrue(firstFailure.contains("rejected"), "Clear device rejection: \(firstFailure)")
         let rejectedURL = try XCTUnwrap(rejectedJournal)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: rejectedURL.path), "A failed restoration retains its journal")
+        XCTAssertEqual(try Data(contentsOf: rejectedURL), try XCTUnwrap(rejectedJournalBytes),
+                       "A failed restoration retains its exact journal bytes")
         let firstTranscript = try XCTUnwrap(rejected.testTranscript)
         XCTAssertEqual(occurrencesIn(firstTranscript, "outbound bmap 1f05020101"), 1)
         XCTAssertFalse(firstTranscript.contains("outbound bmap 1f050100"), "No GET after the rejected SET")
@@ -795,7 +825,8 @@ final class QuietControlSessionTests: XCTestCase {
         let secondTranscript = try XCTUnwrap(rejected.testTranscript)
         XCTAssertEqual(occurrencesIn(secondTranscript, "outbound bmap 1f05020101"), 1,
                        "The rejected restoration is not attempted twice in one app session")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: rejectedURL.path))
+        XCTAssertEqual(try Data(contentsOf: rejectedURL), try XCTUnwrap(rejectedJournalBytes),
+                       "Replay refusal must not alter the checkpoint")
         XCTAssertFalse(secondTranscript.contains("outbound bmap 010302"))
     }
 
