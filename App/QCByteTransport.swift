@@ -44,6 +44,7 @@ protocol QCByteTransport: AnyObject {
     var delegate: QCByteTransportDelegate? { get set }
     var identifier: UUID? { get }
     var isConnected: Bool { get }
+    var isWaitingForConnection: Bool { get }
     var radioState: QCTransportRadioState { get }
     var canSendWriteWithoutResponse: Bool { get }
     /// Begin observing the radio. Live transport creates its CBCentralManager here.
@@ -56,6 +57,10 @@ protocol QCByteTransport: AnyObject {
     /// Writes one already-segmented Bose envelope packet.
     func write(_ segment: Data, to endpoint: QCTransportEndpoint, withoutResponse: Bool) throws
     func close()
+}
+
+extension QCByteTransport {
+    var isWaitingForConnection: Bool { false }
 }
 
 /// CoreBluetooth implementation of the byte boundary. It adapts the existing live
@@ -80,6 +85,8 @@ final class QCLiveByteTransport: NSObject, QCByteTransport {
     private var stage: Stage?
     private var stageWaiter: CheckedContinuation<Void, Error>?
     private var stageTimer: Task<Void, Never>?
+
+    var isWaitingForConnection: Bool { stage == .connection }
 
     func prepareRadio() {
         guard central == nil else { return }
