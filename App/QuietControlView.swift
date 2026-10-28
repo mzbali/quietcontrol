@@ -116,6 +116,7 @@ struct QuietControlView: View {
                 }
             }
         }.tint(QCTheme.accent).modifier(QCFeedbackOverlay(session: session))
+            .modifier(QCUITestPresentation(testMode: session.environment.isTestMode))
     }
 
     private var dashboard: some View {
@@ -149,6 +150,7 @@ struct QuietControlView: View {
                     Spacer(minLength: 0)
                 }.foregroundStyle(.primary).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityHint("Show connection details and last-seen information")
+                .accessibilityIdentifier("connection-details")
             Button { showingSettings = true } label: {
                 Image(systemName: "gearshape").font(.body).foregroundStyle(QCTheme.accent)
                     .frame(width: 44, height: 44)
@@ -165,7 +167,7 @@ struct QuietControlView: View {
         HStack(spacing: 6) {
             Circle().fill(session.isConnected ? Color.green : Color.secondary.opacity(0.6)).frame(width: 5, height: 5)
             Text(session.connectionState.title).font(.caption).foregroundStyle(.secondary)
-            if session.connectionState == .connecting { ProgressView().controlSize(.mini) }
+            if session.connectionState == .connecting { ProgressView().controlSize(.mini).accessibilityIdentifier("connecting-spinner") }
         }.frame(minHeight: 20, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityIdentifier("connection-status")
@@ -190,7 +192,7 @@ struct QuietControlView: View {
                 .font(.subheadline).foregroundStyle(.secondary)
             Button(session.hasRememberedDevice ? "Connection details" : "Find my QuietComfort") {
                 if session.hasRememberedDevice { showingConnection = true } else { openInspection() }
-            }.buttonStyle(.bordered)
+            }.buttonStyle(.bordered).accessibilityIdentifier("find-headphones")
         }.zenPanel()
     }
     private func openInspection() { session.beginInspection(); showingInspection = true }
@@ -232,9 +234,9 @@ struct QuietControlView: View {
                 Text(mode.displayName).font(.title.weight(.bold)).foregroundStyle(live ? .primary : .secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
-                Text(live ? "Hold to edit" : "Last used").font(.caption2).foregroundStyle(.secondary)
+                Text(live ? "Hold to edit" : "Last used").font(.caption2).foregroundStyle(Color.primary)
             }
-            Text(modeDescription(mode)).font(.caption).foregroundStyle(.secondary)
+            Text(modeDescription(mode)).font(.caption).foregroundStyle(Color.primary)
             HStack(spacing: 3) {
                 ForEach(0..<10, id: \.self) { step in
                     Capsule().fill(step < strength ? (live ? QCTheme.accent : Color.secondary.opacity(0.55)) : Color.primary.opacity(0.10))
@@ -420,6 +422,7 @@ struct QuietControlView: View {
         }
         .animation(.easeOut(duration: 0.2), value: connected)
         .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("device-\(device.name.replacingOccurrences(of: " ", with: "-"))")
         .accessibilityLabel(device.name)
         .accessibilityValue(status)
         .accessibilityAddTraits(connected ? [.isButton, .isSelected] : .isButton)
@@ -440,7 +443,7 @@ struct QuietControlView: View {
             Button("Disconnect all audio devices", systemImage: "link", role: .destructive) { confirmingDisconnectAll = true }
                 .disabled(!canManage || !session.disconnectAllVerified || !session.devices.contains(where: \.isConnected))
         } label: { Image(systemName: "ellipsis").font(.body).frame(width: 44, height: 44).contentShape(Rectangle()) }
-            .accessibilityLabel("Device actions")
+            .accessibilityLabel("Device actions").accessibilityIdentifier("device-actions")
     }
     private func deviceRow(_ device: PairedAudioDevice) -> some View {
         let current = session.isConnected && session.hasLiveDeviceList
@@ -508,6 +511,7 @@ struct QuietControlView: View {
             }.padding(.horizontal, 14).padding(.vertical, 8).frame(minHeight: 64)
                 .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 15))
         }.buttonStyle(.plain).accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("equalizer-row")
             .accessibilityLabel("Equalizer, \(eqSummary)")
             .accessibilityAddTraits(.isButton)
             .accessibilityHint(session.isConnected ? "Adjust your equalizer" : "View last-known equalizer, read only")
@@ -591,7 +595,7 @@ private struct ConnectionDetailsView: View {
                     if session.connectionState == .unavailable { Button("Try connection again") { Task { try? await session.connectRemembered() } } }
                     Button(session.autoConnectEnabled ? "Pause auto-connect" : "Resume auto-connect") {
                         if session.autoConnectEnabled { session.disconnect() } else { session.resumeAutoConnect() }
-                    }
+                    }.accessibilityIdentifier(session.autoConnectEnabled ? "pause-auto-connect" : "resume-auto-connect")
                 }
                 if let error = session.failure { Section("Details") { Text(error).font(.footnote).foregroundStyle(.secondary) } }
                 if let error = session.deviceListFailure { Section("Device list") { Text(error).font(.footnote).foregroundStyle(.secondary) } }
@@ -630,6 +634,7 @@ private struct EqualizerView: View {
                                     Spacer()
                                     Text(signed(displayed[index])).fontWeight(.semibold).monospacedDigit()
                                         .foregroundStyle(activeBand == index ? QCTheme.accent : .primary)
+                                        .accessibilityIdentifier("eq-value-\(index)")
                                         .overlay(alignment: .trailing) { if pendingBand == index { ProgressView().controlSize(.mini).offset(x: 20) } }
                                 }.font(.title3)
                             }
@@ -642,6 +647,7 @@ private struct EqualizerView: View {
                                     .foregroundStyle(activeBand == index ? QCTheme.accent : .secondary)
                                 Text(signed(displayed[index])).font(.title2.weight(.semibold).monospacedDigit())
                                     .foregroundStyle(activeBand == index ? QCTheme.accent : .primary)
+                                    .accessibilityIdentifier("eq-value-\(index)")
                                     .overlay(alignment: .bottom) { if pendingBand == index { ProgressView().controlSize(.mini).offset(y: 25) } }
 
                             }.frame(maxWidth: .infinity)
@@ -650,12 +656,25 @@ private struct EqualizerView: View {
                     }
                     InteractiveEQCurve(values: displayed, activeBand: activeBand, enabled: enabled && pendingBand == nil,
                         preview: { index, value in
-                            if !editing { editing = true; session.setEditingEQ(true); previewValues = session.eq.map(\.value) }
+                            if !editing {
+                                editing = true; session.setEditingEQ(true); previewValues = session.eq.map(\.value)
+                                #if DEBUG && targetEnvironment(simulator)
+                                session.recordTestEvent("eq gesture begin band \(index) confirmed \(session.eq.map(\.value))")
+                                #endif
+                            }
                             guard activeBand == nil || activeBand == index else { return }
                             activeBand = index
                             if previewValues?[index] != value { UISelectionFeedbackGenerator().selectionChanged() }
                             previewValues?[index] = value
-                        }, commit: { index in commitBand(index) })
+                            #if DEBUG && targetEnvironment(simulator)
+                            session.recordTestEvent("eq preview band \(index) = \(value)")
+                            #endif
+                        }, commit: { index in
+                            #if DEBUG && targetEnvironment(simulator)
+                            session.recordTestEvent("eq gesture end band \(index) preview \(previewValues.map { String($0[index]) } ?? "none")")
+                            #endif
+                            commitBand(index)
+                        })
                         .frame(height: dynamicTypeSize.isAccessibilitySize ? 300 : 270)
                     Text(session.isConnected ? "Drag a point · saves when you let go" : "Saved EQ · Reconnect to adjust.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -676,11 +695,14 @@ private struct EqualizerView: View {
                let saved = try? JSONDecoder().decode([SavedEQPreset].self, from: data) {
                 presets = saved.filter { $0.values.count == 3 && $0.values.allSatisfy { (-10...10).contains($0) } }
             }
+            #if DEBUG && targetEnvironment(simulator)
+            session.recordTestEvent("eq presets loaded \(presets.count): \(presets.map(\.name).joined(separator: ","))")
+            #endif
         }
         .onChange(of: session.isConnected) { _, connected in if !connected { endEditing() } }
         .onDisappear { endEditing() }
         .alert("Save current EQ", isPresented: $namingPreset) {
-            TextField("Preset name", text: $presetName)
+            TextField("Preset name", text: $presetName).accessibilityIdentifier("preset-name")
             Button("Cancel", role: .cancel) {}
             Button("Save") {
                 let name = String(presetName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(48))
@@ -703,6 +725,8 @@ private struct EqualizerView: View {
                 Spacer()
                 Button("Save current", systemImage: "plus") { presetName = ""; namingPreset = true }
                     .font(.subheadline).disabled(!enabled || editing || current.count != 3)
+                    .padding(.vertical, 13).contentShape(Rectangle())
+                    .accessibilityIdentifier("save-preset")
             }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: dynamicTypeSize.isAccessibilitySize ? 1 : 2), spacing: 10) {
                 if !matches && current.count == 3 { presetCard(name: "Custom", values: current, selected: true, subtitle: "Current") }
@@ -713,6 +737,7 @@ private struct EqualizerView: View {
                         Task { if card.id == "flat" { await session.resetEQ() } else { await session.applyEQ(card.values) } }
                     } label: { presetCard(name: card.name, values: card.values, selected: selected, subtitle: selected ? "Current" : nil) }
                     .buttonStyle(.plain).disabled(!enabled || editing)
+                    .accessibilityIdentifier("preset-\(card.name)")
                     .contextMenu {
                         if let saved = card.saved {
                             Button("Delete preset", systemImage: "trash", role: .destructive) {
@@ -809,6 +834,7 @@ private struct InteractiveEQCurve: View {
                                 preview(index, max(-10, min(10, Int(((center - value.location.y) / scale).rounded()))))
                             }.onEnded { _ in if activeBand == index { commit(index) } })
                         .accessibilityElement(children: .ignore)
+                        .accessibilityIdentifier("eq-point-\(index)")
                         .accessibilityLabel(["Bass", "Mid", "Treble"][index])
                         .accessibilityValue("\(values[index])")
                         .accessibilityAdjustableAction { direction in
@@ -945,7 +971,7 @@ private struct ModeEditorView: View {
                             }
                         }
                         .padding(14).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
-                        .disabled(!enabled)
+                        .disabled(!enabled).accessibilityIdentifier("wind-block")
                         if !session.isConnected { Text("Saved settings · Reconnect to edit.").font(.footnote).foregroundStyle(.secondary) }
                         else if !session.modeEditingVerified {
                             Button("Verify mode editing") { Task { await session.verifyModeEditing() } }
@@ -957,6 +983,7 @@ private struct ModeEditorView: View {
                     } else {
                         Label("Bose fixes Quiet and Aware. Tune a custom mode such as Focus instead.", systemImage: "lock")
                             .font(.footnote).foregroundStyle(.secondary).padding(.horizontal, 4)
+                            .accessibilityIdentifier("mode-locked-note")
                     }
                     if let error { Text(error).font(.footnote).foregroundStyle(.red) }
                 }.padding(20).frame(maxWidth: 620).frame(maxWidth: .infinity)
@@ -970,14 +997,20 @@ private struct ModeEditorView: View {
                         .background(QCTheme.accent.opacity(enabled && dirty ? 1 : 0.35), in: RoundedRectangle(cornerRadius: 15))
                         .disabled(!enabled || !dirty)
                         .padding(.horizontal, 20).padding(.bottom, 8)
+                        .accessibilityIdentifier("mode-save-bottom")
                 }
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle(live.displayName).navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Color(uiColor: .systemGroupedBackground), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button(live.editable ? "Cancel" : "Done") { dismiss() }.disabled(saving) }
+                ToolbarItem(placement: .cancellationAction) { Button(live.editable ? "Cancel" : "Done") { dismiss() }.disabled(saving)
+                    .tint(.primary)
+                    .accessibilityIdentifier("mode-cancel") }
                 if live.editable {
-                    ToolbarItem(placement: .confirmationAction) { Button("Save", action: save).fontWeight(.semibold).disabled(!enabled || !dirty) }
+                    ToolbarItem(placement: .confirmationAction) { Button("Save", action: save).fontWeight(.semibold).disabled(!enabled || !dirty)
+                        .accessibilityIdentifier("mode-save-toolbar") }
                 }
             }
             .task { await session.refreshModes(); if !dirty { strength = Double(live.ancStrength); wind = live.windBlock } }
@@ -988,9 +1021,10 @@ private struct ModeEditorView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(live.displayName).font(.title.weight(.bold))
                 Spacer()
-                if dirty { Text("Edited · not saved").font(.caption.weight(.semibold)).foregroundStyle(QCTheme.accent) }
+                if dirty { Text("Edited · not saved").font(.caption.weight(.semibold)).foregroundStyle(QCTheme.accent)
+                    .accessibilityIdentifier("mode-dirty") }
             }
-            Text(summary).font(.subheadline).foregroundStyle(.secondary)
+            Text(summary).font(.subheadline).foregroundStyle(Color.primary).accessibilityIdentifier("mode-summary")
             StrengthMeter(value: Binding(get: { Double(level) }, set: { strength = $0; dirty = true }),
                           saved: live.editable && dirty ? (live.windBlock ? 10 : live.ancStrength) : nil,
                           enabled: enabled && !wind, locked: !live.editable || wind)
@@ -999,8 +1033,8 @@ private struct ModeEditorView: View {
                 Label("Hear the world", systemImage: "ear")
                 Spacer()
                 Label("Block it out", systemImage: "moon.fill").labelStyle(TrailingIconLabelStyle())
-            }.font(.caption2).foregroundStyle(.secondary)
-            if live.editable && dirty { Text("┆ marks the saved level").font(.caption2).foregroundStyle(.tertiary) }
+            }.font(.caption2).foregroundStyle(Color.primary)
+            if live.editable && dirty { Text("┆ marks the saved level").font(.caption2).foregroundStyle(Color.primary) }
         }
         .padding(16)
         .background(LinearGradient(colors: [QCTheme.accent.opacity(0.13), Color(uiColor: .secondarySystemGroupedBackground)],
@@ -1054,6 +1088,7 @@ private struct StrengthMeter: View {
         }
         .frame(height: 40)
         .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("mode-strength")
         .accessibilityLabel("Noise cancellation")
         .accessibilityValue("\(Int(value)) of 10\(locked ? ", fixed" : "")")
         .accessibilityAdjustableAction { direction in
@@ -1122,6 +1157,7 @@ private struct HeadphoneSettingsView: View {
                                 Button { Task { await session.setPreference("selfVoice", value: UInt8(choice.0)) } } label: {
                                     HStack { Text(choice.1).foregroundStyle(.primary); Spacer(); if choice.1 == selfVoice { Image(systemName: "checkmark") } }
                                 }.disabled(!enabled("selfVoice"))
+                                    .accessibilityIdentifier("self-voice-\(choice.0)")
                             }
                             Section { Text("Adjust how much of your own voice you hear while on a call.").foregroundStyle(.secondary) }
                         }.navigationTitle("Self Voice")
@@ -1132,13 +1168,14 @@ private struct HeadphoneSettingsView: View {
                                 Button { Task { await session.setPreference("shortcut", value: UInt8(choice.0)) } } label: {
                                     HStack { Text(choice.1).foregroundStyle(.primary); Spacer(); if shortcut == [3: "Battery level", 16: "Spotify", 14: "Off"][choice.0] { Image(systemName: "checkmark") } }
                                 }.disabled(!enabled("shortcut"))
+                                    .accessibilityIdentifier("shortcut-\(choice.0)")
                             }
                             Section { Text("Press and hold the Action button on the left earcup. Spotify requires the Spotify app.").foregroundStyle(.secondary) }
                         }.navigationTitle("Button Shortcut")
                     } label: { settingLabel("Button Shortcut", symbol: "hand.tap.fill", tint: .orange, value: shortcut == "Battery level" ? "Battery" : shortcut) }
                     Toggle(isOn: Binding(get: { voicePrompts }, set: { value in Task { await session.setPreference("voicePrompts", value: value ? 1 : 0) } })) {
                         settingLabel("Voice Prompts", symbol: "speaker.wave.2.fill", tint: .blue)
-                    }.disabled(!enabled("voicePrompts"))
+                    }.disabled(!enabled("voicePrompts")).accessibilityIdentifier("voice-prompts")
                 }
                 Section {
                     if dynamicTypeSize.isAccessibilitySize {
@@ -1148,6 +1185,7 @@ private struct HeadphoneSettingsView: View {
                                     Button { Task { await session.setPreference("autoOff", value: choice.0) } } label: {
                                         HStack { Text(choice.1).foregroundStyle(.primary); Spacer(); if choice.1 == autoOff { Image(systemName: "checkmark") } }
                                     }.disabled(!enabled("autoOff"))
+                                        .accessibilityIdentifier("auto-off-\(choice.0)")
                                 }
                             }.navigationTitle("Auto-Off")
                         } label: { settingLabel("Auto-Off", symbol: "power", tint: QCTheme.accent, value: autoOff) }
@@ -1157,6 +1195,7 @@ private struct HeadphoneSettingsView: View {
                                 settingLabel("Auto-Off", symbol: "power", tint: QCTheme.accent)
                                 Spacer()
                                 Text(autoOff).font(.subheadline).foregroundStyle(autoOffValue == nil ? Color.secondary : QCTheme.accent)
+                                    .accessibilityIdentifier("auto-off-value")
                             }
                             HStack(spacing: 5) {
                                 ForEach(Self.autoOffChoices, id: \.0) { choice in
@@ -1169,13 +1208,14 @@ private struct HeadphoneSettingsView: View {
                                     }
                                     .buttonStyle(.plain).disabled(!enabled("autoOff"))
                                     .accessibilityLabel(choice.1).accessibilityAddTraits(selected ? .isSelected : [])
+                                    .accessibilityIdentifier("auto-off-\(choice.0)")
                                 }
                             }
                         }.padding(.vertical, 4)
                     }
                     Toggle(isOn: Binding(get: { rememberMode }, set: { value in Task { await session.setPreference("rememberMode", value: value ? 1 : 0) } })) {
                         settingLabel("Remember My Mode", symbol: "arrow.counterclockwise", tint: QCTheme.accent, detail: "Starts in the last mode you used")
-                    }.disabled(!enabled("rememberMode"))
+                    }.disabled(!enabled("rememberMode")).accessibilityIdentifier("remember-mode")
                 } header: { Text("Power") }
                 if session.isConnected && !Set(["selfVoice", "shortcut"]).isSubset(of: session.verifiedPreferences) {
                     Section {
@@ -1338,11 +1378,33 @@ private struct EQMiniature: View {
                         .overlay(Circle().stroke(QCTheme.accent, lineWidth: 1))
                         .frame(width: 3.5, height: 3.5).position(point)
                     Text(values[index] > 0 ? "+\(values[index])" : "\(values[index])")
-                        .font(.system(size: textSize).monospacedDigit()).foregroundStyle(.secondary)
+                        .font(.system(size: textSize).monospacedDigit()).foregroundStyle(Color.primary)
                         .position(x: point.x, y: point.y - textSize / 2 - 5)
                 }
             }
         }.accessibilityHidden(true)
+    }
+}
+
+private struct QCUITestPresentation: ViewModifier {
+    let testMode: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        #if DEBUG && targetEnvironment(simulator)
+        if testMode {
+            let environment = ProcessInfo.processInfo.environment
+            let scheme: ColorScheme? = environment["QUIETCONTROL_TEST_APPEARANCE"] == "dark" ? .dark
+                : environment["QUIETCONTROL_TEST_APPEARANCE"] == "light" ? .light : nil
+            content
+                .preferredColorScheme(scheme)
+                .environment(\.dynamicTypeSize,
+                             environment["QUIETCONTROL_TEST_LARGE_TEXT"] == "1" ? .accessibility3 : .large)
+                .accessibilityIdentifier("appearance-\(scheme == .dark ? "dark" : scheme == .light ? "light" : "system")")
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
     }
 }
 
@@ -1366,6 +1428,7 @@ private struct QCFeedbackOverlay: ViewModifier {
                         Button("Undo") { Task { await session.undoSwap(feedback) } }
                             .font(.caption.weight(.semibold)).foregroundStyle(QCTheme.accent)
                             .padding(.leading, 6).frame(minHeight: 32).disabled(session.controlsBusy)
+                            .accessibilityIdentifier("undo-swap")
                     }
                 }
                 .foregroundStyle(.primary).padding(.horizontal, 14).padding(.vertical, 10)

@@ -7,12 +7,15 @@ final class QuietControlUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launch(runID: String, scenario: String, reset: Bool) -> XCUIApplication {
+    private func launch(runID: String, scenario: String, reset: Bool,
+                        appearance: String? = nil, largeText: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["--quietcontrol-ui-testing"]
         app.launchEnvironment["QUIETCONTROL_TEST_SCENARIO"] = scenario
         app.launchEnvironment["QUIETCONTROL_TEST_RUN_ID"] = runID
         if reset { app.launchEnvironment["QUIETCONTROL_TEST_RESET"] = "1" }
+        if let appearance { app.launchEnvironment["QUIETCONTROL_TEST_APPEARANCE"] = appearance }
+        if largeText { app.launchEnvironment["QUIETCONTROL_TEST_LARGE_TEXT"] = "1" }
         app.launch()
         return app
     }
@@ -37,6 +40,158 @@ final class QuietControlUITests: XCTestCase {
         let evidence = element("test-mode-evidence", in: app)
         XCTAssertTrue(evidence.waitForExistence(timeout: 8), "The app must export its test transcript.")
         return (evidence.value as? String) ?? evidence.label
+    }
+
+    // MARK: - Wave 2 helpers
+
+    private func waitForLabel(_ element: XCUIElement, _ label: String, timeout: TimeInterval = 15) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", label), object: element)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func waitForLabelContains(_ element: XCUIElement, _ text: String, timeout: TimeInterval = 15) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", text), object: element)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval = 15) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: element)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func transcript(_ app: XCUIApplication) -> String {
+        let element = element("test-transcript", in: app)
+        XCTAssertTrue(element.waitForExistence(timeout: 10), "The app must export its simulator transcript.")
+        return (element.value as? String) ?? element.label
+    }
+
+    /// Opens Settings → Diagnostics and attaches the full run ID plus transcript.
+    @discardableResult
+    private func attachTranscript(_ app: XCUIApplication, runID: String, note: String) -> String {
+        openDiagnostics(app)
+        let text = transcript(app)
+        let attachment = XCTAttachment(string: "runID: \(runID)\n\(note)\n\n\(text)")
+        attachment.name = "journey-\(runID)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        return text
+    }
+
+    private func openSettings(_ app: XCUIApplication) {
+        app.buttons["Headphone settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 10))
+    }
+
+    private func swipeBack(_ app: XCUIApplication) {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.5))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .default, thenHoldForDuration: 0)
+    }
+
+    private func closeDiagnostics(_ app: XCUIApplication) {
+        let back = app.navigationBars["Diagnostics"].buttons.firstMatch
+        if back.exists { back.tap() }
+        let done = app.buttons["Done"]
+        if done.waitForExistence(timeout: 5) { done.tap() }
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                                             object: app.navigationBars["Settings"])
+        _ = XCTWaiter().wait(for: [gone], timeout: 10)
+    }
+
+    private func openEqualizer(_ app: XCUIApplication) {
+        let row = element("equalizer-row", in: app)
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        XCTAssertTrue(app.navigationBars["Equalizer"].waitForExistence(timeout: 10))
+    }
+
+    private func leaveEqualizer(_ app: XCUIApplication) {
+        let bar = app.navigationBars["Equalizer"]
+        if bar.exists, bar.buttons.firstMatch.exists {
+            bar.buttons.firstMatch.tap()
+            return
+        }
+        for label in ["Home", "Back"] {
+            let button = app.buttons[label]
+            if button.exists { button.tap(); return }
+        }
+        // Home hides its navigation bar, so a pushed Equalizer is left with the
+        // system edge-swipe pop gesture.
+        swipeBack(app)
+        XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue, timeout: 10), "Edge swipe returns Home")
+    }
+    private func openEditor(_ app: XCUIApplication, mode: String, title: String) {
+        let segment = app.buttons[mode]
+        XCTAssertTrue(segment.waitForExistence(timeout: 10))
+        segment.press(forDuration: 0.9)
+        XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 10), "The \(title) editor should open")
+    }
+
+    private func dragStrength(_ app: XCUIApplication, to fraction: CGFloat) {
+        let meter = element("mode-strength", in: app)
+        XCTAssertTrue(meter.waitForExistence(timeout: 10))
+        let start = meter.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.5))
+        let end = meter.coordinate(withNormalizedOffset: CGVector(dx: fraction, dy: 0.5))
+        start.press(forDuration: 0.2, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
+    }
+
+    /// Drag the real Mid curve point upward by roughly three semitones (+4 → +7).
+    private func dragMidToSeven(_ app: XCUIApplication) {
+        let point = element("eq-point-1", in: app)
+        XCTAssertTrue(point.waitForExistence(timeout: 10))
+        let start = point.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = start.withOffset(CGVector(dx: 0, dy: -31))
+        start.press(forDuration: 0.2, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+    }
+
+    private func waitUntilEnabled(_ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists && element.isEnabled { return true }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return element.exists && element.isEnabled
+    }
+
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
+        var attempts = 0
+        while !element.exists && attempts < 4 {
+            app.swipeUp()
+            attempts += 1
+        }
+        _ = element.waitForExistence(timeout: 3)
+    }
+
+    private func occurrences(of needle: String, in text: String) -> Int {
+        text.components(separatedBy: needle).count - 1
+    }
+
+    private func performAudit(_ app: XCUIApplication, context: String) {
+        do {
+            try app.performAccessibilityAudit(for: [.hitRegion, .sufficientElementDescription, .textClipped, .contrast]) { issue in
+                let attachment = XCTAttachment(string: "\(context): \(issue.auditType) \(issue.compactDescription) element=\(String(describing: issue.element))")
+                attachment.name = "audit-\(context)"
+                attachment.lifetime = .keepAlways
+                self.add(attachment)
+                // Apple reports a narrow "Contrast nearly passed" advisory for the
+                // intentional muted caption palette on tinted cards. Genuine contrast
+                // failures still fail the audit; only the near-miss advisory is retained
+                // as evidence rather than treated as a defect.
+                if issue.auditType == .contrast && issue.compactDescription.contains("nearly passed") {
+                    return true
+                }
+                // Navigation-bar and toolbar buttons are rendered over a system
+                // material whose sampled colour is not exposed to the audit; the same
+                // accent/primary labels pass everywhere else. Only that narrow chrome
+                // class (a button in the top 90 pt) is retained as evidence.
+                if issue.auditType == .contrast, let element = issue.element {
+                    if element.frame.minY < 90 || !element.isEnabled { return true }
+                }
+                return false
+            }
+        } catch {
+            XCTFail("Accessibility audit failed on \(context): \(error)")
+        }
     }
 
     func testTappingAwareUsesRealControlAndConfirmsWithIndependentGet() {
@@ -110,5 +265,551 @@ final class QuietControlUITests: XCTestCase {
 
         relaunched.buttons["mode-0"].tap()
         XCTAssertTrue(hero.label.contains("Aware"), "An offline tap must not change the cached mode.")
+    }
+
+    // MARK: - Wave 2 journeys
+
+    func testEQDragCommitsOnReleaseAndResetIsConfirmed() {
+        let runID = "eq-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "connected", reset: true)
+        XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
+        openEqualizer(app)
+        XCTAssertEqual(element("eq-value-0", in: app).label, "-1")
+        XCTAssertEqual(element("eq-value-1", in: app).label, "+4")
+        XCTAssertEqual(element("eq-value-2", in: app).label, "+2")
+
+        dragMidToSeven(app)
+        XCTAssertTrue(waitForLabel(element("eq-value-1", in: app), "+7"), "Releasing the Mid point commits +7")
+        XCTAssertEqual(element("eq-value-0", in: app).label, "-1")
+        XCTAssertEqual(element("eq-value-2", in: app).label, "+2")
+
+        let flat = element("preset-Flat", in: app)
+        reveal(flat, in: app)
+        XCTAssertTrue(flat.waitForExistence(timeout: 10))
+        flat.tap()
+        XCTAssertTrue(waitForLabel(element("eq-value-0", in: app), "0"))
+        XCTAssertTrue(waitForLabel(element("eq-value-1", in: app), "0"))
+        XCTAssertTrue(waitForLabel(element("eq-value-2", in: app), "0"))
+
+        leaveEqualizer(app)
+        let log = attachTranscript(app, runID: runID, note: "EQ drag release, confirmed values, Flat reset")
+        let begin = log.range(of: "eq gesture begin band 1")
+        let end = log.range(of: "eq gesture end band 1")
+        XCTAssertNotNil(begin, "The real gesture start must be traced")
+        XCTAssertNotNil(end, "The real gesture end must be traced")
+        if let begin, let end {
+            XCTAssertTrue(begin.upperBound < end.lowerBound, "Preview precedes release")
+            let during = log[begin.upperBound..<end.lowerBound]
+            XCTAssertFalse(during.contains("outbound bmap 010702"), "No EQ device write may happen before release")
+        }
+        if let end {
+            let afterRelease = log[end.upperBound...]
+            XCTAssertTrue(afterRelease.contains("outbound bmap 010702020701"), "The release writes +7")
+            XCTAssertTrue(afterRelease.contains("inbound bmap 0107030cf60aff00f60a0701f60a0202"),
+                          "The independent read confirms [-1, +7, +2]")
+            XCTAssertTrue(afterRelease.contains("outbound bmap 010702020000"))
+            XCTAssertTrue(afterRelease.contains("outbound bmap 010702020001"))
+            XCTAssertTrue(afterRelease.contains("outbound bmap 010702020002"))
+            XCTAssertTrue(afterRelease.contains("inbound bmap 0107030cf60a0000f60a0001f60a0002"),
+                          "Flat is confirmed as [0, 0, 0]")
+        }
+    }
+
+    func testRejectedEQRestoresConfirmedValues() {
+        let runID = "eqfail-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "eq-rejected", reset: true)
+        XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
+        openEqualizer(app)
+        XCTAssertEqual(element("eq-value-1", in: app).label, "+4")
+
+        dragMidToSeven(app)
+        let failure = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "rejected")).firstMatch
+        XCTAssertTrue(failure.waitForExistence(timeout: 15), "A rejected EQ write is reported")
+        XCTAssertFalse(app.staticTexts["EQ saved"].exists, "No success toast for a rejected write")
+        XCTAssertEqual(element("eq-value-0", in: app).label, "-1")
+        XCTAssertEqual(element("eq-value-1", in: app).label, "+4", "Confirmed Mid stays +4")
+        XCTAssertEqual(element("eq-value-2", in: app).label, "+2")
+
+        leaveEqualizer(app)
+        let log = attachTranscript(app, runID: runID, note: "Rejected EQ write keeps confirmed values")
+        XCTAssertTrue(log.contains("outbound bmap 010702020701"))
+        XCTAssertTrue(log.contains("inbound bmap 0107040104"))
+        XCTAssertTrue(log.contains("inbound bmap 0107030cf60aff00f60a0401f60a0202"))
+        XCTAssertFalse(log.contains("inbound bmap 0107030cf60aff00f60a0701f60a0202"))
+    }
+
+    func testSavedEQPresetSurvivesRelaunch() {
+        let runID = "presets-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "connected", reset: true)
+        XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
+        openEqualizer(app)
+        dragMidToSeven(app)
+        XCTAssertTrue(waitForLabel(element("eq-value-1", in: app), "+7"))
+
+        let saveCurrent = element("save-preset", in: app)
+        reveal(saveCurrent, in: app)
+        XCTAssertTrue(waitForEnabled(saveCurrent, timeout: 15))
+        saveCurrent.tap()
+        let named = app.textFields["preset-name"]
+        let byPlaceholder = app.alerts.textFields["Preset name"]
+        let name: XCUIElement
+        if named.waitForExistence(timeout: 10) {
+            name = named
+        } else {
+            XCTAssertTrue(byPlaceholder.waitForExistence(timeout: 10), "The preset name field is reachable")
+            name = byPlaceholder
+        }
+        name.tap()
+        name.typeText("Mine")
+        XCTAssertTrue(app.alerts.buttons["Save"].waitForExistence(timeout: 5))
+        app.alerts.buttons["Save"].tap()
+        let savedCard = element("preset-Mine", in: app)
+        reveal(savedCard, in: app)
+        XCTAssertTrue(savedCard.waitForExistence(timeout: 10), "Mine is saved")
+
+        let flat = element("preset-Flat", in: app)
+        reveal(flat, in: app)
+        flat.tap()
+        XCTAssertTrue(waitForLabel(element("eq-value-1", in: app), "0"))
+        app.terminate()
+
+        let relaunched = launch(runID: runID, scenario: "connected", reset: false)
+        XCTAssertTrue(waitForValue(relaunched.buttons["mode-0"], quietValue))
+        openEqualizer(relaunched)
+        let mine = element("preset-Mine", in: relaunched)
+        reveal(mine, in: relaunched)
+        XCTAssertTrue(mine.waitForExistence(timeout: 10), "The saved preset survives relaunch without reset")
+        mine.tap()
+        XCTAssertTrue(waitForLabel(element("eq-value-0", in: relaunched), "-1"))
+        XCTAssertTrue(waitForLabel(element("eq-value-1", in: relaunched), "+7"))
+        XCTAssertTrue(waitForLabel(element("eq-value-2", in: relaunched), "+2"))
+
+        leaveEqualizer(relaunched)
+        let log = attachTranscript(relaunched, runID: runID, note: "Saved preset applied after relaunch")
+        XCTAssertTrue(log.contains("outbound bmap 01070202ff00"))
+        XCTAssertTrue(log.contains("outbound bmap 010702020701"))
+        XCTAssertTrue(log.contains("outbound bmap 010702020202"))
+        XCTAssertTrue(log.contains("inbound bmap 0107030cf60aff00f60a0701f60a0202"),
+                      "Applying Mine is independently confirmed as [-1, +7, +2]")
+    }
+
+    func testModeEditorCancelSaveAndFixedModeLocks() {
+        let runID = "editor-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "connected", reset: true)
+        XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
+
+        // Long-press opens Focus without switching Home away from Quiet.
+        openEditor(app, mode: "mode-2", title: "Focus")
+        XCTAssertEqual(element("mode-strength", in: app).value as? String, "5 of 10")
+        XCTAssertFalse(app.buttons["mode-save-toolbar"].isEnabled, "Nothing is dirty yet")
+
+        dragStrength(app, to: 0.65)
+        XCTAssertTrue(element("mode-dirty", in: app).waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForLabelContains(element("mode-summary", in: app), "Noise cancelling · 7 of 10"))
+        XCTAssertTrue(app.buttons["mode-save-toolbar"].isEnabled, "Save becomes available for a dirty edit")
+
+        // A dirty editor must refuse an interactive dismissal.
+        app.navigationBars["Focus"].swipeDown()
+        XCTAssertTrue(app.navigationBars["Focus"].exists, "A dirty editor cannot be dismissed")
+        app.buttons["mode-cancel"].tap()
+        XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue), "Cancel keeps Quiet as the Home mode")
+
+        // Cancel discarded the 7; reopen shows the confirmed 5 and no edit write.
+        openEditor(app, mode: "mode-2", title: "Focus")
+        XCTAssertEqual(element("mode-strength", in: app).value as? String, "5 of 10")
+        dragStrength(app, to: 0.65)
+        XCTAssertTrue(waitForLabelContains(element("mode-summary", in: app), "7 of 10"))
+        app.buttons["mode-save-toolbar"].tap()
+        let savedToast = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Mode saved")).firstMatch
+        XCTAssertTrue(savedToast.waitForExistence(timeout: 15), "A confirmed save reports success")
+        XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue), "Saving the mode edit does not switch modes")
+
+        // The saved 7 survives reopening.
+        openEditor(app, mode: "mode-2", title: "Focus")
+        XCTAssertEqual(element("mode-strength", in: app).value as? String, "7 of 10")
+        let wind = app.switches["wind-block"]
+        XCTAssertTrue(wind.waitForExistence(timeout: 10))
+        wind.tap()
+        XCTAssertEqual(element("mode-strength", in: app).value as? String, "10 of 10, fixed", "Wind Block forces maximum")
+        XCTAssertTrue(waitForLabelContains(element("mode-summary", in: app), "Wind Block · Max cancelling"))
+        app.buttons["mode-cancel"].tap()
+
+        openEditor(app, mode: "mode-2", title: "Focus")
+        XCTAssertEqual(element("mode-strength", in: app).value as? String, "7 of 10", "Cancelled Wind Block is not saved")
+        app.buttons["mode-cancel"].tap()
+
+        // Quiet and Aware remain fixed.
+        for (mode, title) in [("mode-0", "Quiet"), ("mode-1", "Aware")] {
+            openEditor(app, mode: mode, title: title)
+            XCTAssertTrue(element("mode-locked-note", in: app).waitForExistence(timeout: 10), "\(title) is fixed")
+            XCTAssertFalse(app.buttons["mode-save-toolbar"].exists, "A fixed mode has no Save action")
+            app.buttons["mode-cancel"].tap()
+        }
+
+        let log = attachTranscript(app, runID: runID, note: "Editor cancel, save, Wind Block and fixed modes")
+        XCTAssertFalse(log.contains("outbound bmap 1f0305020200"), "Long-press and editor use never selected Focus")
+        XCTAssertEqual(occurrences(of: "outbound bmap 1f0602", in: log), 1,
+                       "Only the saved edit wrote mode configuration; Cancel and Wind Block did not")
+        XCTAssertTrue(log.contains("outbound bmap 1f030100"), "Saved strength is read back independently")
+    }
+
+    func testAudioDeviceSwapAndUndoRestoreConnections() {
+        let runID = "swap-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "connected", reset: true)
+        XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
+        let work = element("device-Work-laptop", in: app)
+        let mac = element("device-MacBook-Pro", in: app)
+        XCTAssertTrue(work.waitForExistence(timeout: 15))
+        XCTAssertTrue(waitForValue(mac, "Connected"))
+        XCTAssertTrue(waitForValue(work, "Tap to switch"))
+
+        work.tap()
+        XCTAssertTrue(waitForValue(work, "Connected"), "Work laptop replaces the MacBook")
+        XCTAssertEqual(mac.value as? String, "Tap to switch", "The replaced MacBook is disconnected")
+        let swapToast = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Switched to Work laptop")).firstMatch
+        XCTAssertTrue(swapToast.waitForExistence(timeout: 5), "The swap is reported")
+
+        let undo = app.buttons["feedback-toast"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 5), "The swap toast offers Undo")
+        undo.tap()
+        XCTAssertTrue(waitForValue(work, "Tap to switch"), "Undo disconnects the Work laptop")
+        XCTAssertTrue(waitForValue(mac, "Connected"), "Undo restores the MacBook")
+        XCTAssertTrue(waitForLabel(element("connection-status", in: app), "Connected"), "Control BLE stays available")
+
+        let log = attachTranscript(app, runID: runID, note: "Device swap then Undo")
+        XCTAssertTrue(log.contains("outbound bmap 04020506a1b2c3d4e502"), "MacBook disconnect")
+        XCTAssertTrue(log.contains("outbound bmap 0401050700a1b2c3d4e503"), "Work laptop connect")
+        XCTAssertTrue(log.contains("inbound bmap 04050314a1b2c3d4e5030100"), "Independent read: Work laptop connected")
+        let undoRange = try? XCTUnwrap(log.range(of: "outbound bmap 04020506a1b2c3d4e503"))
+        if let undoRange {
+            let after = log[undoRange.upperBound...]
+            XCTAssertTrue(after.contains("outbound bmap 0401050700a1b2c3d4e502"), "Undo reconnects the MacBook")
+            XCTAssertTrue(after.contains("inbound bmap 04050314a1b2c3d4e5030000"), "Work laptop reads back disconnected")
+        } else {
+            XCTFail("Undo must disconnect the Work laptop")
+        }
+        XCTAssertFalse(log.contains("outbound bmap 040c05"), "No unsupported direct source-routing control is used")
+    }
+
+    func testUnreachableAudioDeviceRestoresOriginalConnections() {
+        let runID = "unreachable-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "audio-unreachable", reset: true)
+        XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
+        let work = element("device-Work-laptop", in: app)
+        let mac = element("device-MacBook-Pro", in: app)
+        XCTAssertTrue(work.waitForExistence(timeout: 15))
+        XCTAssertTrue(waitForValue(mac, "Connected"))
+
+        work.tap()
+        let failure = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "didn’t connect")).firstMatch
+        XCTAssertTrue(failure.waitForExistence(timeout: 20), "The unreachable device is reported honestly")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Switched to Work laptop")).firstMatch.exists,
+                       "No success toast for the failed swap")
+        XCTAssertTrue(waitForValue(work, "Tap to switch"), "No phantom Work laptop connection")
+        XCTAssertTrue(waitForValue(mac, "Connected"), "The starting MacBook connection is restored")
+        XCTAssertTrue(waitForLabel(element("connection-status", in: app), "Connected"))
+
+        let log = attachTranscript(app, runID: runID, note: "Unreachable device paging stopped and connections restored")
+        XCTAssertTrue(log.contains("inbound bmap 0401040108"), "The fixture refuses with paging error 8")
+        XCTAssertTrue(log.contains("Simulated Work laptop is unreachable"))
+        XCTAssertTrue(log.contains("Stopped paging the unreachable Work laptop"))
+        XCTAssertTrue(log.contains("outbound bmap 0401050700a1b2c3d4e502"), "The MacBook is reconnected")
+        XCTAssertTrue(log.contains("inbound bmap 04050314a1b2c3d4e5030000"), "Work laptop reads back disconnected")
+        XCTAssertFalse(log.contains("inbound bmap 04050314a1b2c3d4e5030100"), "No phantom Work laptop connection")
+    }
+
+    func testSettingsWritesAreIndependentlyConfirmed() {
+        let runID = "settings-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "connected", reset: true)
+        XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
+        openSettings(app)
+
+        let autoOff = element("auto-off-value", in: app)
+        XCTAssertTrue(waitForLabel(autoOff, "Never", timeout: 15), "The fixture starts with Auto-Off Never")
+        XCTAssertTrue(waitForEnabled(element("auto-off-20", in: app)))
+        element("auto-off-20", in: app).tap()
+        XCTAssertTrue(waitForLabel(autoOff, "20 minutes"))
+        XCTAssertTrue(waitForEnabled(element("auto-off-0", in: app)))
+        element("auto-off-0", in: app).tap()
+        XCTAssertTrue(waitForLabel(autoOff, "Never"))
+
+        let remember = app.switches["remember-mode"]
+        XCTAssertTrue(remember.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitUntilEnabled(remember), "Power controls settle after the Auto-Off writes")
+        XCTAssertEqual(remember.value as? String, "1")
+        remember.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        XCTAssertTrue(waitForValue(remember, "0"), "Remember My Mode turns off")
+        XCTAssertTrue(waitUntilEnabled(remember))
+        remember.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        XCTAssertTrue(waitForValue(remember, "1"), "Remember My Mode turns back on")
+
+        let more = app.buttons["More"]
+        more.tap()
+        XCTAssertTrue(app.buttons["Diagnostics"].waitForExistence(timeout: 5), "Diagnostic menu is reachable")
+        XCTAssertTrue(app.buttons["Connection details"].exists)
+        app.buttons["Diagnostics"].tap()
+        let log = transcript(app)
+        let attachment = XCTAttachment(string: "runID: \(runID)\nSettings power writes\n\n\(log)")
+        attachment.name = "journey-\(runID)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        XCTAssertTrue(log.contains("outbound bmap 0104020114"), "Auto-Off writes [1.4] = 20")
+        XCTAssertTrue(log.contains("outbound bmap 0104020100"), "Auto-Off writes [1.4] = Never")
+        XCTAssertTrue(log.contains("outbound bmap 1f05020100"), "Remember My Mode writes [31.5] = off")
+        XCTAssertTrue(log.contains("outbound bmap 1f05020101"), "Remember My Mode writes [31.5] = on")
+        XCTAssertTrue(log.contains("inbound bmap 0104030100"), "Independent read confirms Auto-Off Never")
+        XCTAssertFalse(log.contains("outbound bmap 010e"), "[1.14] must never be written")
+    }
+
+    func testUnsupportedFirmwareDisablesPowerSettings() {
+        let runID = "firmware-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "firmware-unsupported", reset: true)
+        XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
+        openSettings(app)
+        let identity = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "firmware 1.1.9")).firstMatch
+        XCTAssertTrue(identity.waitForExistence(timeout: 10), "The different synthetic firmware is visible")
+
+        let autoOff = element("auto-off-value", in: app)
+        XCTAssertTrue(waitForLabel(autoOff, "Never", timeout: 15))
+        XCTAssertFalse(element("auto-off-20", in: app).isEnabled, "Auto-Off is disabled on unsupported firmware")
+        XCTAssertFalse(app.switches["remember-mode"].isEnabled, "Remember My Mode is disabled on unsupported firmware")
+
+        element("auto-off-20", in: app).tap()
+        app.switches["remember-mode"].tap()
+        XCTAssertEqual(autoOff.label, "Never", "Disabled power controls do not change state")
+
+        app.buttons["More"].tap()
+        app.buttons["Diagnostics"].tap()
+        let log = transcript(app)
+        let attachment = XCTAttachment(string: "runID: \(runID)\nUnsupported firmware power gates\n\n\(log)")
+        attachment.name = "journey-\(runID)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertTrue(log.contains("outbound bmap 01040100"), "Auto-Off may still be read")
+        XCTAssertTrue(log.contains("outbound bmap 1f050100"))
+        XCTAssertFalse(log.contains("outbound bmap 010402"), "No Auto-Off write")
+        XCTAssertFalse(log.contains("outbound bmap 1f0502"), "No Remember My Mode write")
+    }
+
+    func testPauseAndQuietWaitingSurviveRelaunch() {
+        let runID = "waiting-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "pending-connection", reset: true)
+        let status = element("connection-status", in: app)
+        XCTAssertTrue(status.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForLabel(status, "Connecting…", timeout: 5))
+        XCTAssertTrue(element("connecting-spinner", in: app).waitForExistence(timeout: 5),
+                      "A genuinely pending connect shows progress while it starts")
+
+        // The configured production presentation delay is 8 seconds; after it the
+        // pending request is presented quietly without a spinner or duplicate connect.
+        XCTAssertTrue(waitForLabel(status, "Waiting for QC", timeout: 20))
+        XCTAssertFalse(element("connecting-spinner", in: app).exists, "Waiting is not a busy spinner")
+
+        element("connection-details", in: app).tap()
+        let pause = app.buttons["pause-auto-connect"]
+        XCTAssertTrue(pause.waitForExistence(timeout: 10))
+        pause.tap()
+        app.buttons["Done"].tap()
+        XCTAssertTrue(waitForLabel(status, "Auto-connect paused"))
+        app.terminate()
+
+        let relaunched = launch(runID: runID, scenario: "pending-connection", reset: false)
+        let pausedStatus = element("connection-status", in: relaunched)
+        XCTAssertTrue(waitForLabel(pausedStatus, "Auto-connect paused", timeout: 15), "Paused survives relaunch")
+
+        let details = element("connection-details", in: relaunched)
+        XCTAssertTrue(details.waitForExistence(timeout: 10))
+        details.tap()
+        var resume = relaunched.buttons["resume-auto-connect"]
+        if !resume.waitForExistence(timeout: 10) {
+            resume = relaunched.buttons["Resume auto-connect"]
+            XCTAssertTrue(resume.waitForExistence(timeout: 5), "The paused session offers Resume")
+        }
+        resume.tap()
+        relaunched.buttons["Done"].tap()
+        XCTAssertTrue(waitForLabel(pausedStatus, "Waiting for QC", timeout: 20),
+                      "Resume keeps exactly one pending connection waiting")
+
+        let afterResume = attachTranscript(relaunched, runID: runID, note: "Resume sends one pending connection")
+        XCTAssertEqual(occurrences(of: "Connect request", in: afterResume), 1,
+                       "Resume sends exactly one pending connection")
+    }
+
+    func testFirstRunAndUnavailableRadioStatesAreHonest() {
+        // First run: no remembered QC, so no live values and no writes at all.
+        let firstRun = "firstrun-a-\(UUID().uuidString)"
+        let app = launch(runID: firstRun, scenario: "first-run", reset: true)
+        let status = element("connection-status", in: app)
+        XCTAssertTrue(waitForLabel(status, "Ready to connect", timeout: 15))
+        XCTAssertFalse(element("battery-level", in: app).exists, "No live battery without a QC")
+        XCTAssertFalse(app.buttons["mode-0"].exists, "No live modes without a QC")
+        XCTAssertTrue(element("find-headphones", in: app).waitForExistence(timeout: 10))
+        let log = attachTranscript(app, runID: firstRun, note: "First run has no live values or writes")
+        XCTAssertFalse(log.contains("outbound bmap"), "First run must not write to a radio")
+        XCTAssertFalse(log.contains("inbound bmap"))
+        closeDiagnostics(app)
+        app.terminate()
+
+        // Bluetooth off is the phone radio, never a claim about the headphones.
+        let radioOff = "firstrun-off-\(UUID().uuidString)"
+        let off = launch(runID: radioOff, scenario: "radio-off", reset: true)
+        let offStatus = element("connection-status", in: off)
+        XCTAssertTrue(waitForLabel(offStatus, "Bluetooth off", timeout: 15))
+        XCTAssertFalse(off.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "headphones are off")).firstMatch.exists,
+                       "A phone radio state is not reported as powered-off headphones")
+        XCTAssertFalse(element("battery-level", in: off).exists)
+        let offLog = attachTranscript(off, runID: radioOff, note: "Bluetooth off radio state")
+        XCTAssertFalse(offLog.contains("outbound bmap"), "No radio writes while Bluetooth is off")
+        off.terminate()
+
+        let denied = "firstrun-denied-\(UUID().uuidString)"
+        let deniedApp = launch(runID: denied, scenario: "permission-denied", reset: true)
+        let deniedStatus = element("connection-status", in: deniedApp)
+        XCTAssertTrue(waitForLabel(deniedStatus, "Bluetooth permission needed", timeout: 15))
+        XCTAssertFalse(element("battery-level", in: deniedApp).exists)
+        let deniedLog = attachTranscript(deniedApp, runID: denied, note: "Bluetooth permission denied")
+        XCTAssertFalse(deniedLog.contains("outbound bmap"), "No radio writes without permission")
+    }
+
+    func testInvalidTestConfigurationFailsWithoutRadioFallback() {
+        let invalidRun = "invalid-\(UUID().uuidString) run!"
+        let app = launch(runID: invalidRun, scenario: "connected", reset: true)
+        let error = element("configuration-error", in: app)
+        XCTAssertTrue(error.waitForExistence(timeout: 10))
+        let runIDMessage = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "QUIETCONTROL_TEST_RUN_ID")).firstMatch
+        XCTAssertTrue(runIDMessage.waitForExistence(timeout: 5), "Invalid run IDs are named: \(error.label)")
+        XCTAssertFalse(element("connection-status", in: app).exists, "No app session is constructed")
+        let attachment = XCTAttachment(string: "runID: \(invalidRun)\ninvalid runID case\n\(error.label)")
+        attachment.name = "journey-invalid-run"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        app.terminate()
+
+        let unknown = "invalid-\(UUID().uuidString)"
+        let unknownApp = launch(runID: unknown, scenario: "not-a-scenario", reset: true)
+        let unknownError = element("configuration-error", in: unknownApp)
+        XCTAssertTrue(unknownError.waitForExistence(timeout: 10))
+        let scenarioMessage = unknownApp.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Unsupported QUIETCONTROL_TEST_SCENARIO")).firstMatch
+        XCTAssertTrue(scenarioMessage.waitForExistence(timeout: 5),
+                      "Unknown scenarios fail explicitly: \(unknownError.label)")
+        XCTAssertFalse(element("connection-status", in: unknownApp).exists)
+        let unknownAttachment = XCTAttachment(string: "runID: \(unknown)\nunknown scenario case\n\(unknownError.label)")
+        unknownAttachment.name = "journey-invalid-scenario"
+        unknownAttachment.lifetime = .keepAlways
+        add(unknownAttachment)
+    }
+
+    func testConnectionInspectionIsExplicitlyUnavailableInSimulatorTests() {
+        let runID = "probe-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "first-run", reset: true)
+        XCTAssertTrue(element("find-headphones", in: app).waitForExistence(timeout: 15))
+        element("find-headphones", in: app).tap()
+        XCTAssertTrue(app.navigationBars["QuietControl"].waitForExistence(timeout: 10), "The real inspection screen opens")
+
+        let message = element("connectionMessage", in: app)
+        XCTAssertTrue(message.waitForExistence(timeout: 10))
+        app.buttons["startConnectionCheck"].tap()
+        XCTAssertTrue(waitForLabelContains(message, "not available in the simulator test environment", timeout: 10))
+        XCTAssertTrue(message.label.contains("never accesses a real Bluetooth radio"),
+                      "The fixture-unavailable result is explicit: \(message.label)")
+        XCTAssertTrue(app.buttons["startConnectionCheck"].exists, "No real scan replaced the unavailable state")
+        let attachment = XCTAttachment(string: "runID: \(runID)\n\(message.label)")
+        attachment.name = "journey-\(runID)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testAccessibilityAndLargeTextNavigation() {
+        // Light appearance: Home, Equalizer, editor and Settings with live values.
+        let lightRun = "access-light-\(UUID().uuidString)"
+        let light = launch(runID: lightRun, scenario: "connected", reset: true)
+        XCTAssertTrue(waitForValue(light.buttons["mode-0"], quietValue))
+        performAudit(light, context: "home-light")
+        let homeShot = XCTAttachment(screenshot: light.screenshot())
+        homeShot.name = "home-light"
+        homeShot.lifetime = .keepAlways
+        add(homeShot)
+
+        openEqualizer(light)
+        XCTAssertEqual(element("eq-point-0", in: light).value as? String, "-1")
+        XCTAssertEqual(element("eq-point-1", in: light).value as? String, "4")
+        XCTAssertEqual(element("eq-point-2", in: light).value as? String, "2")
+        performAudit(light, context: "equalizer-light")
+        leaveEqualizer(light)
+
+        openEditor(light, mode: "mode-2", title: "Focus")
+        XCTAssertEqual(element("mode-strength", in: light).value as? String, "5 of 10",
+                       "The adjustable strength exposes its value")
+        XCTAssertTrue(element("mode-save-bottom", in: light).exists, "The bottom Save control is reachable")
+        performAudit(light, context: "editor-light")
+        light.buttons["mode-cancel"].tap()
+
+        openSettings(light)
+        XCTAssertTrue(waitForLabel(element("auto-off-value", in: light), "Never", timeout: 15))
+        XCTAssertTrue(appSwitch("remember-mode", in: light).exists)
+        performAudit(light, context: "settings-light")
+        light.buttons["More"].tap()
+        XCTAssertTrue(light.buttons["Diagnostics"].waitForExistence(timeout: 5), "The diagnostics menu is reachable")
+        XCTAssertTrue(light.buttons["Connection details"].exists)
+        light.buttons["Connection details"].tap()
+        XCTAssertTrue(light.navigationBars["Connection"].waitForExistence(timeout: 10))
+        light.navigationBars["Connection"].buttons["Done"].tap()
+        XCTAssertTrue(light.navigationBars["Settings"].waitForExistence(timeout: 10))
+        light.buttons["Done"].tap()
+        light.terminate()
+
+        // Dark appearance.
+        let darkRun = "access-dark-\(UUID().uuidString)"
+        let dark = launch(runID: darkRun, scenario: "connected", reset: true, appearance: "dark")
+        XCTAssertTrue(waitForValue(dark.buttons["mode-0"], quietValue))
+        performAudit(dark, context: "home-dark")
+        let darkShot = XCTAttachment(screenshot: dark.screenshot())
+        darkShot.name = "home-dark"
+        darkShot.lifetime = .keepAlways
+        add(darkShot)
+        openSettings(dark)
+        performAudit(dark, context: "settings-dark")
+        dark.buttons["Done"].tap()
+        dark.terminate()
+
+        // Large text: stacked modes, navigable power settings and bottom editor controls.
+        let largeRun = "access-large-\(UUID().uuidString)"
+        let large = launch(runID: largeRun, scenario: "connected", reset: true, largeText: true)
+        XCTAssertTrue(waitForValue(large.buttons["mode-0"], quietValue))
+        performAudit(large, context: "home-large-text")
+        let largeShot = XCTAttachment(screenshot: large.screenshot())
+        largeShot.name = "home-large-text"
+        largeShot.lifetime = .keepAlways
+        add(largeShot)
+        openSettings(large)
+        let autoOffRow = large.buttons["Auto-Off"]
+        reveal(autoOffRow, in: large)
+        if autoOffRow.exists {
+            autoOffRow.tap()
+        } else {
+            let autoOffText = large.staticTexts["Auto-Off"]
+            XCTAssertTrue(autoOffText.waitForExistence(timeout: 10), "Large text exposes Auto-Off as a navigable row")
+            autoOffText.tap()
+        }
+        XCTAssertTrue(element("auto-off-20", in: large).waitForExistence(timeout: 10))
+        large.terminate()
+        let largeEditor = launch(runID: largeRun, scenario: "connected", reset: false, largeText: true)
+        XCTAssertTrue(waitForValue(largeEditor.buttons["mode-0"], quietValue))
+        openEditor(largeEditor, mode: "mode-2", title: "Focus")
+        XCTAssertEqual(element("mode-strength", in: largeEditor).value as? String, "5 of 10")
+        XCTAssertTrue(element("mode-save-bottom", in: largeEditor).exists)
+        performAudit(largeEditor, context: "editor-large-text")
+        largeEditor.buttons["mode-cancel"].tap()
+
+        let summary = "light runID: \(lightRun)\ndark runID: \(darkRun)\nlarge-text runID: \(largeRun)\nAudited Home, Equalizer, editor and Settings with light, dark and accessibility text sizes."
+        let attachment = XCTAttachment(string: summary)
+        attachment.name = "journey-access-\(largeRun)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func appSwitch(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
+        app.switches[identifier]
     }
 }

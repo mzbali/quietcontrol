@@ -1,0 +1,27 @@
+{
+  "configurations" : [
+    {
+      "id" : "9F4B2C1A-2222-4A2B-8C3D-000000000002",
+      "name" : "Accessibility",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+
+  },
+  "testTargets" : [
+    {
+      "selectedTests" : [
+        "QuietControlUITests/testAccessibilityAndLargeTextNavigation"
+      ],
+      "target" : {
+        "containerPath" : "container:QuietControl.xcodeproj",
+        "identifier" : "C40000000000000000000002",
+        "name" : "QuietControlUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

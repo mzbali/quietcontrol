@@ -205,6 +205,182 @@ final class QuietControlSessionTests: XCTestCase {
         let writeRange = try XCTUnwrap(transcript.range(of: "outbound bmap 1f0305020100"))
         XCTAssertTrue(transcript[writeRange.upperBound...].contains("outbound bmap 1f030100"))
     }
+
+    // MARK: - Wave 2: EQ, settings, devices and connection state
+
+    private func occurrences(of needle: String, in text: String) -> Int {
+        text.components(separatedBy: needle).count - 1
+    }
+
+    func testNoEQDeviceWriteExistsBeforeExplicitCommit() async throws {
+        let session = try makeSession(scenario: .connected, runID: "unit-eq-\(UUID().uuidString.prefix(8))")
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+        // Connection setup only reads EQ. Nothing has been dragged or committed, so
+        // no EQ SETGET may exist on the wire yet.
+        let before = try XCTUnwrap(session.testTranscript)
+        XCTAssertTrue(before.contains("outbound bmap 01070100"), "EQ reads use GET")
+        XCTAssertFalse(before.contains("outbound bmap 010702"), "No EQ write before an explicit commit")
+
+        await session.setEQ(.mid, value: 7)
+        XCTAssertEqual(session.eq.first { $0.band == .mid }?.value, 7)
+        let after = try XCTUnwrap(session.testTranscript)
+        XCTAssertEqual(occurrences(of: "outbound bmap 010702020701", in: after), 1, "One commit, one write")
+        let write = try XCTUnwrap(after.range(of: "outbound bmap 010702020701"))
+        XCTAssertTrue(after[write.upperBound...].contains("outbound bmap 01070100"),
+                      "A commit is followed by an independent GET")
+    }
+
+    func testRejectedEQWriteKeepsConfirmedValuesWithIndependentRead() async throws {
+        let session = try makeSession(scenario: .eqRejected, runID: "eqfail-\(UUID().uuidString.prefix(8))")
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+        XCTAssertEqual(session.eq.map(\.value), [-1, 4, 2])
+
+        await session.setEQ(.mid, value: 7)
+        XCTAssertEqual(session.eq.map(\.value), [-1, 4, 2], "A rejected write must not be displayed as confirmed")
+        let failure = try XCTUnwrap(session.failure)
+        XCTAssertTrue(failure.contains("rejected"), "Failure must name the device rejection: \(failure)")
+        XCTAssertEqual(session.toast?.isError, true)
+        XCTAssertNotEqual(session.toast?.text, "EQ saved")
+
+        let transcript = try XCTUnwrap(session.testTranscript)
+        XCTAssertTrue(transcript.contains("outbound bmap 010702020701"))
+        XCTAssertTrue(transcript.contains("inbound bmap 0107040104"), "The fixture rejects with BMAP error 4")
+        XCTAssertTrue(transcript.contains("inbound bmap 0107030cf60aff00f60a0401f60a0202"),
+                      "The independent read still reports [-1, 4, 2]")
+    }
+
+    func testApplyEQRollbackRestoresConfirmedValuesAfterRejection() async throws {
+        let session = try makeSession(scenario: .eqRejected, runID: "eqfail-\(UUID().uuidString.prefix(8))")
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+
+        await session.applyEQ([-1, 7, 2])
+        XCTAssertEqual(session.eq.map(\.value), [-1, 4, 2], "The confirmed EQ survives a partially failed preset apply")
+        XCTAssertNotNil(session.failure)
+        let transcript = try XCTUnwrap(session.testTranscript)
+        let rejected = try XCTUnwrap(transcript.range(of: "inbound bmap 0107040104"))
+        let after = transcript[rejected.upperBound...]
+        XCTAssertTrue(after.contains("outbound bmap 010702020401"), "Rollback rewrites the confirmed Mid value")
+        XCTAssertTrue(after.contains("inbound bmap 0107030cf60aff00f60a0401f60a0202"))
+        XCTAssertFalse(after.contains("inbound bmap 0107030cf60aff00f60a0701f60a0202"),
+                       "No false success for the rejected preset")
+    }
+
+    func testPowerSettingsUseCorrectBlocksAndPreservePayloadBits() async throws {
+        let session = try makeSession(scenario: .connected, runID: "settings-\(UUID().uuidString.prefix(8))")
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+        await session.refreshPreferences()
+        XCTAssertEqual(session.preferencePackets["autoOff"], Data([0]))
+        XCTAssertEqual(session.preferencePackets["rememberMode"], Data([1]))
+
+        await session.setPreference("autoOff", value: 20)
+        XCTAssertEqual(session.preferencePackets["autoOff"], Data([20]))
+        await session.setPreference("autoOff", value: 0)
+        XCTAssertEqual(session.preferencePackets["autoOff"], Data([0]))
+        await session.setPreference("rememberMode", value: 0)
+        XCTAssertEqual(session.preferencePackets["rememberMode"], Data([0]))
+        await session.setPreference("rememberMode", value: 1)
+        XCTAssertEqual(session.preferencePackets["rememberMode"], Data([1]))
+
+        await session.verifyPreferences()
+        XCTAssertTrue(session.verifiedPreferences.contains("selfVoice"))
+        XCTAssertTrue(session.verifiedPreferences.contains("shortcut"))
+        await session.setPreference("selfVoice", value: 3)
+        XCTAssertEqual(session.preferencePackets["selfVoice"], Data([1, 3]), "Self Voice keeps its leading type byte")
+        await session.setPreference("shortcut", value: 14)
+        XCTAssertEqual(session.preferencePackets["shortcut"], Data([0x80, 9, 14]), "The shortcut header is preserved")
+        await session.setPreference("voicePrompts", value: 1)
+        XCTAssertEqual(session.preferencePackets["voicePrompts"], Data([0x21]))
+        await session.setPreference("voicePrompts", value: 0)
+        XCTAssertEqual(session.preferencePackets["voicePrompts"], Data([0x01]), "Only the prompt bit changes")
+
+        let transcript = try XCTUnwrap(session.testTranscript)
+        for packet in ["outbound bmap 0104020114", "outbound bmap 0104020100",
+                       "outbound bmap 1f05020100", "outbound bmap 1f05020101",
+                       "outbound bmap 010b02020103", "outbound bmap 0109020380090e",
+                       "outbound bmap 0103020121", "outbound bmap 0103020101"] {
+            XCTAssertTrue(transcript.contains(packet), "Expected literal packet \(packet)")
+        }
+        XCTAssertFalse(transcript.contains("outbound bmap 010e"), "[1.14] must never be written")
+    }
+
+    func testUnsupportedFirmwareDisablesPowerWrites() async throws {
+        let session = try makeSession(scenario: .unsupportedFirmware, runID: "firmware-\(UUID().uuidString.prefix(8))")
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+        XCTAssertEqual(session.firmware, "1.1.9-99+deadbeef")
+        XCTAssertTrue(session.hasVerifiedDirectControl, "Mode/EQ control is still proven for this fixture")
+        await session.refreshPreferences()
+        XCTAssertFalse(session.verifiedPreferences.contains("autoOff"))
+        XCTAssertFalse(session.verifiedPreferences.contains("rememberMode"))
+
+        await session.setPreference("autoOff", value: 20)
+        await session.setPreference("rememberMode", value: 0)
+        XCTAssertEqual(session.preferencePackets["autoOff"], Data([0]), "Power settings must stay unchanged")
+        XCTAssertEqual(session.preferencePackets["rememberMode"], Data([1]))
+
+        let transcript = try XCTUnwrap(session.testTranscript)
+        XCTAssertTrue(transcript.contains("outbound bmap 01040100"), "Values may be read")
+        XCTAssertTrue(transcript.contains("outbound bmap 1f050100"))
+        XCTAssertFalse(transcript.contains("outbound bmap 010402"), "No Auto-Off write on unsupported firmware")
+        XCTAssertFalse(transcript.contains("outbound bmap 1f0502"), "No Remember My Mode write on unsupported firmware")
+    }
+
+    func testUnreachableAudioDeviceRestoresOriginalConnections() async throws {
+        let session = try makeSession(scenario: .audioUnreachable, runID: "unreachable-\(UUID().uuidString.prefix(8))")
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+        let work = Data([0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0x03])
+        let mac = Data([0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0x02])
+
+        await session.connectAudioDevice(work, replacing: mac)
+        let failure = try XCTUnwrap(session.failure)
+        XCTAssertTrue(failure.contains("didn’t connect"), "Failure names the unreachable device: \(failure)")
+        XCTAssertTrue(failure.contains("MacBook"), "Failure names the restored device: \(failure)")
+        XCTAssertEqual(Set(session.devices.filter(\.isConnected).map(\.address)), Set([session.devices[0].address, mac]))
+        XCTAssertFalse(session.devices.first { $0.address == work }?.isConnected ?? true,
+                       "No phantom Work laptop connection")
+
+        let transcript = try XCTUnwrap(session.testTranscript)
+        XCTAssertTrue(transcript.contains("outbound bmap 0401050700a1b2c3d4e503"), "The failed connection was attempted")
+        XCTAssertTrue(transcript.contains("inbound bmap 0401040108"), "The fixture refuses with paging error 8")
+        XCTAssertTrue(transcript.contains("Simulated Work laptop is unreachable"))
+        XCTAssertTrue(transcript.contains("Stopped paging the unreachable Work laptop"))
+        XCTAssertTrue(transcript.contains("outbound bmap 0401050700a1b2c3d4e502"), "The MacBook is reconnected")
+        XCTAssertTrue(transcript.contains("inbound bmap 04050314a1b2c3d4e5030000"), "Work laptop reads back disconnected")
+    }
+
+    func testPendingConnectionPauseRelaunchAndSingleResume() async throws {
+        let runID = "waiting-\(UUID().uuidString.prefix(8))"
+        let session = try makeSession(scenario: .pendingConnection, runID: runID)
+        let pending = await waitUntil { session.testTranscript?.contains("Connect request 1 is pending") == true }
+        XCTAssertTrue(pending)
+        XCTAssertEqual(occurrences(of: "Connect request", in: session.testTranscript ?? ""), 1)
+
+        session.disconnect()
+        XCTAssertEqual(session.connectionState, .paused)
+        XCTAssertFalse(session.isWorking)
+        XCTAssertTrue(session.testTranscript?.contains("Closed the pending simulated connection") == true)
+
+        let relaunched = try makeSession(scenario: .pendingConnection, runID: runID, reset: false)
+        XCTAssertEqual(relaunched.connectionState, .paused, "A paused relaunch stays paused")
+        XCTAssertFalse(relaunched.isWorking)
+        let waitingTranscript = relaunched.testTranscript ?? ""
+        XCTAssertEqual(occurrences(of: "Connect request", in: waitingTranscript), 0,
+                       "A paused relaunch must not start a connection")
+
+        relaunched.resumeAutoConnect()
+        let resumed = await waitUntil { relaunched.testTranscript?.contains("Connect request 1 is pending") == true }
+        XCTAssertTrue(resumed, "Resume sends one new pending connection")
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(occurrences(of: "Connect request", in: relaunched.testTranscript ?? ""), 1,
+                       "Resume must not duplicate the pending connection")
+        XCTAssertTrue(relaunched.isWorking)
+        relaunched.disconnect()
+    }
 }
 
 /// Models a radio connection that has not completed, without constructing Apple CB objects.

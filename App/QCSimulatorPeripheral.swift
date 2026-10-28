@@ -18,6 +18,7 @@ final class QCSimulatorPeripheral: QCByteTransport {
     private let defaults: UserDefaults
     private let evidence: QCTestEvidence
     private let peripheralID: UUID
+    private let firmware: String
     private let endpoint = QCTransportEndpoint(id: "SIMULATED-FEBE-SECURE", writeWithoutResponse: true)
 
     private var reassembler = BoseBLEReassembler()
@@ -36,10 +37,16 @@ final class QCSimulatorPeripheral: QCByteTransport {
         "voicePrompts": Data([0x21]),
         "selfVoice": Data([1, 2]),
         "shortcut": Data([0x80, 9, 3]),
-        "autoOff": Data([20]),
+        "autoOff": Data([0]),
         "rememberMode": Data([1])
     ]
     private var repliesInFlight = 0
+    private var rejectedEQWrite = false
+    private var pendingConnect: CheckedContinuation<QCTransportLink, Error>?
+    private var connectRequests = 0
+
+    static let workLaptopAddress = Data([0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0x03])
+    static let macBookAddress = Data([0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0x02])
 
     private struct SimulatedDevice {
         var address: Data
@@ -54,28 +61,50 @@ final class QCSimulatorPeripheral: QCByteTransport {
         self.defaults = defaults
         self.evidence = evidence
         self.peripheralID = peripheralID
+        firmware = scenario.firmware
         publishState(connected: false)
     }
 
+    var isWaitingForConnection: Bool { pendingConnect != nil }
+
     func prepareRadio() {
-        radioState = .poweredOn
+        switch scenario {
+        case .radioOff:
+            radioState = .poweredOff
+        case .permissionDenied:
+            radioState = .unauthorized
+        default:
+            radioState = .poweredOn
+        }
+        let state = radioState
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 20_000_000)
             guard let self else { return }
-            self.delegate?.transport(self, radioStateChanged: .poweredOn)
+            self.delegate?.transport(self, radioStateChanged: state)
         }
     }
 
     func connect(rememberedID: UUID) async throws -> QCTransportLink {
+        connectRequests += 1
+        guard scenario != .radioOff, scenario != .permissionDenied else {
+            evidence.event("Simulated radio is unavailable; connect request \(connectRequests) refused.")
+            throw QCSessionError.unavailable("Bluetooth is not available for this scenario.")
+        }
         guard scenario != .offlineCached else {
             evidence.event("Simulated QC is offline for scenario \(scenario.rawValue).")
             throw QCSessionError.unavailable("The simulated QC is offline for this scenario.")
         }
+        defaults.set(peripheralID.uuidString, forKey: QCTestHarness.rememberedKey)
+        if scenario == .pendingConnection {
+            evidence.event("Connect request \(connectRequests) is pending for run \(runID).")
+            return try await withCheckedThrowingContinuation { continuation in
+                pendingConnect = continuation
+            }
+        }
         try? await Task.sleep(nanoseconds: 30_000_000)
+        evidence.event("Connect request \(connectRequests) completed for run \(runID).")
         isConnected = true
         identifier = peripheralID
-        defaults.set(peripheralID.uuidString, forKey: QCTestHarness.rememberedKey)
-        evidence.event("Simulated QC connected for run \(runID).")
         publishState(connected: true)
         return QCTransportLink(identifier: peripheralID, name: "QC Simulator",
                                manufacturer: "Bose Corporation", model: "884367-0100",
@@ -107,10 +136,14 @@ final class QCSimulatorPeripheral: QCByteTransport {
     }
 
     func close() {
+        let pending = pendingConnect
+        pendingConnect = nil
+        if pending != nil { evidence.event("Closed the pending simulated connection for run \(runID).") }
         isConnected = false
         identifier = nil
         reassembler.reset()
         publishState(connected: false)
+        pending?.resume(throwing: QCSessionError.disconnected)
     }
 
     // MARK: - Request handling
@@ -140,7 +173,7 @@ final class QCSimulatorPeripheral: QCByteTransport {
     private func replies(for frame: BMAPFrame) throws -> [BMAPFrame] {
         switch (frame.block, frame.function, frame.operation) {
         case (0, 5, .get):
-            return [try reply(frame, .status, Data("1.0.6-80+f5f219b".utf8))]
+            return [try reply(frame, .status, Data(firmware.utf8))]
         case (2, 2, .get):
             return [try reply(frame, .status, Data([UInt8(battery)]))]
         case (31, 3, .get):
@@ -173,6 +206,11 @@ final class QCSimulatorPeripheral: QCByteTransport {
             let value = Int(Int8(bitPattern: frame.payload[frame.payload.startIndex]))
             let band = Int(frame.payload[frame.payload.startIndex + 1])
             guard (0...2).contains(band), (-10...10).contains(value) else { throw BMAPError.malformedPayload }
+            if scenario == .eqRejected && !rejectedEQWrite {
+                rejectedEQWrite = true
+                evidence.event("Rejected one simulated EQ write (band \(band) = \(value)); confirmed EQ is unchanged.")
+                return [try reply(frame, .error, Data([4]))]
+            }
             eq[band] = value
             publishState(connected: true)
             return [try reply(frame, .status, eqPayload())]
@@ -195,11 +233,18 @@ final class QCSimulatorPeripheral: QCByteTransport {
             guard frame.payload.count == 7 else { throw BMAPError.malformedPayload }
             let address = Data(frame.payload.dropFirst())
             guard let index = devices.firstIndex(where: { $0.address == address }) else { throw BMAPError.malformedPayload }
+            if scenario == .audioUnreachable && address == Self.workLaptopAddress {
+                evidence.event("Simulated Work laptop is unreachable; the QC keeps paging it (BMAP error 8).")
+                return [try reply(frame, .error, Data([8]))]
+            }
             devices[index].connection = 1
             publishState(connected: true)
             return [try reply(frame, .status, Data([0]))]
         case (4, 2, .start):
             guard let index = devices.firstIndex(where: { $0.address == frame.payload }) else { throw BMAPError.malformedPayload }
+            if scenario == .audioUnreachable && frame.payload == Self.workLaptopAddress {
+                evidence.event("Stopped paging the unreachable Work laptop; no phantom connection exists.")
+            }
             devices[index].connection = 0
             if activeAddress == devices[index].address { activeAddress = Data() }
             publishState(connected: true)
@@ -214,7 +259,10 @@ final class QCSimulatorPeripheral: QCByteTransport {
         case (1, 3, .get), (1, 11, .get), (1, 9, .get), (1, 4, .get), (31, 5, .get):
             return [try reply(frame, .status, try preference(for: frame))]
         case (1, 3, .setGet), (1, 11, .setGet), (1, 9, .setGet), (1, 4, .setGet), (31, 5, .setGet):
-            preferences[preferenceName(block: frame.block, function: frame.function)] = frame.payload
+            let name = preferenceName(block: frame.block, function: frame.function)
+            preferences[name] = frame.payload
+            evidence.event("Simulated \(name) write stored \(frame.payload.hexString).")
+            publishState(connected: true)
             return [try reply(frame, .status, frame.payload)]
         case (31, 6, .setGet):
             guard frame.payload.count == 39 else { throw BMAPError.malformedPayload }
@@ -294,6 +342,9 @@ final class QCSimulatorPeripheral: QCByteTransport {
             scenario: scenario.rawValue, runID: runID, connected: connected, mode: mode, eq: eq,
             multipoint: multipoint,
             devices: devices.map { .init(address: $0.address.hexString, name: $0.name, connected: $0.connection & 1 != 0) },
+            firmware: firmware,
+            activeAudio: activeAddress.isEmpty ? nil : activeAddress.hexString,
+            preferences: preferences.mapValues { $0.hexString },
             updatedAt: Date()))
     }
 
