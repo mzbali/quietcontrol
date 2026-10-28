@@ -50,6 +50,8 @@ UUID_RE = re.compile(
 )
 TEST_ID_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.]+/test[A-Za-z0-9_]+\(\)$")
 PACKET_TOKEN_RE = re.compile(r"^(outbound|inbound):[0-9A-Fa-f ]+$")
+EVIDENCE_TOKEN_RE = re.compile(r"^(?:(?:outbound|inbound):[0-9A-Fa-f ]+\*?|event:.+)$")
+MANIFEST_SCHEMA_VERSION = 2
 EXIT_PASS = 0
 EXIT_FAIL = 1
 EXIT_USAGE = 2
@@ -321,11 +323,110 @@ TRANSCRIPT_KEYS = {
     "forbiddenMessages",
 }
 
+# Schema 2 is the complete preinstall mapping: every executable test names one or
+# more required runs and each run carries explicit evidence expectations.
+RUN2_KEYS = {
+    "prefix",
+    "scenario",
+    "reset",
+    "expect",
+    "artifacts",
+    "evidence",
+    "sharedPrefixGroup",
+    "sharedMatchToken",
+    "expectedRuns",
+}
+EXPECT2_KEYS = {"files", "snapshot", "peripheral", "journal", "defaults", "transcript", "lifecycle"}
+FILES_KEYS = {"require", "forbid"}
+SNAPSHOT2_KEYS = {"state", "lastMode", "eq", "modes", "focusAncStrength", "focusWindBlock", "literal", "firmware"}
+PERIPHERAL2_KEYS = {
+    "connected",
+    "mode",
+    "eq",
+    "multipoint",
+    "firmware",
+    "activeAudio",
+    "preferences",
+}
+JOURNAL2_KEYS = {"state", "literal", "fields", "peripheralNotSynthetic"}
+DEFAULTS_KEYS = {"preset"}
+PRESET_KEYS = {"name", "values"}
+TRANSCRIPT2_KEYS = {
+    "scenarios",
+    "order",
+    "required",
+    "forbidden",
+    "noOutboundScenarios",
+    "forbiddenMessages",
+    "counts",
+    "noOutboundBetween",
+    "requireEvents",
+    "forbidEvents",
+    "segmentHeaders",
+    "segmentHeadersAfter",
+}
+COUNT_KEYS = {"token", "equals", "atLeast", "atMost", "after"}
+BETWEEN_KEYS = {"start", "end", "prefix"}
+LIFECYCLE_KEYS = {"rxPrefix", "beforeEvent", "afterEvent", "expectedBefore", "expectedAfter", "expectedTotal"}
+ATTACHMENT_KEYS = {"audits", "geometry", "invalidConfiguration", "journeyRunIDs"}
+AUDIT_KEYS = {"contexts", "screenshots"}
+
+SNAPSHOT_FILE_KEYS = {
+    "version",
+    "peripheralID",
+    "manufacturer",
+    "model",
+    "firmware",
+    "modes",
+    "eq",
+    "lastMode",
+    "lastSeen",
+    "battery",
+    "multipoint",
+    "devices",
+    "controllerAddress",
+}
+PERIPHERAL_FILE_KEYS = {
+    "scenario",
+    "runID",
+    "connected",
+    "mode",
+    "eq",
+    "multipoint",
+    "devices",
+    "updatedAt",
+    "firmware",
+    "activeAudio",
+    "preferences",
+}
+CONFIG_FILE_KEYS = {"scenario", "runID", "reset", "peripheral", "defaultsSuite"}
+
 
 def _check_keys(mapping, allowed, where: str) -> None:
     require(isinstance(mapping, dict), f"{where}: expected an object")
     unknown = set(mapping) - allowed
     require(not unknown, f"{where}: unsupported keys {sorted(unknown)}")
+
+
+def _require_bool(value, where: str) -> None:
+    require(isinstance(value, bool), f"{where} must be a boolean")
+
+
+def _require_int(value, where: str) -> None:
+    require(isinstance(value, int) and not isinstance(value, bool), f"{where} must be an integer")
+
+
+def _require_string(value, where: str, *, nonempty: bool = True) -> None:
+    require(isinstance(value, str) and (bool(value) or not nonempty), f"{where} must be a string")
+
+
+def _require_int_triplet(value, where: str) -> None:
+    require(
+        isinstance(value, list)
+        and len(value) == 3
+        and all(isinstance(item, int) and not isinstance(item, bool) for item in value),
+        f"{where} must be exactly three integers",
+    )
 
 
 def validate_manifest(manifest) -> None:
@@ -334,7 +435,11 @@ def validate_manifest(manifest) -> None:
         {"schemaVersion", "description", "synthetic", "simulator", "session", "journeys"},
         "manifest",
     )
-    require(manifest.get("schemaVersion") == 1, "manifest: schemaVersion must be 1")
+    version = manifest.get("schemaVersion")
+    require(
+        version in (1, MANIFEST_SCHEMA_VERSION),
+        f"manifest: unsupported schemaVersion {version!r}; expected 1 or {MANIFEST_SCHEMA_VERSION}",
+    )
 
     synthetic = manifest.get("synthetic")
     _check_keys(
@@ -380,18 +485,331 @@ def validate_manifest(manifest) -> None:
 
     seen_ids: set[str] = set()
     for index, entry in enumerate(session["tests"]):
-        _validate_entry(entry, f"manifest.session.tests[{index}]", seen_ids)
+        if version == 1:
+            _validate_entry(entry, f"manifest.session.tests[{index}]", seen_ids)
+            require("label" in entry, f"{entry['id']}: session entries need a label")
+        else:
+            _validate_entry_v2(entry, f"manifest.session.tests[{index}]", seen_ids, "session")
         require(entry["id"].startswith(session["target"] + "/"), f"{entry['id']}: not in target {session['target']}")
-        require("label" in entry, f"{entry['id']}: session entries need a label")
 
     journeys = manifest.get("journeys")
     require(isinstance(journeys, list) and journeys, "manifest journeys required")
     names: set[str] = set()
     for index, entry in enumerate(journeys):
-        _validate_entry(entry, f"manifest.journeys[{index}]", seen_ids)
+        if version == 1:
+            _validate_entry(entry, f"manifest.journeys[{index}]", seen_ids)
+        else:
+            _validate_entry_v2(entry, f"manifest.journeys[{index}]", seen_ids, "ui")
         require(isinstance(entry.get("name"), str) and entry["name"], "journey name required")
         require(entry["name"] not in names, f"duplicate journey name {entry['name']!r}")
         names.add(entry["name"])
+
+    if version == MANIFEST_SCHEMA_VERSION:
+        _validate_prefix_groups(manifest["session"]["tests"], "session")
+        _validate_prefix_groups(manifest["journeys"], "ui")
+
+
+def _validate_prefix_groups(entries: list[dict], lane: str) -> None:
+    """Reject ambiguous or reused prefixes except an explicit shared group."""
+    seen: dict[str, dict] = {}
+    for entry in entries:
+        for run in entry["runs"]:
+            if run.get("artifacts") is False or run.get("evidence") == "invalid-configuration":
+                continue
+            prefix = run["prefix"]
+            group = run.get("sharedPrefixGroup")
+            if group:
+                continue
+            require(
+                prefix not in seen,
+                f"{lane}: prefix {prefix!r} is used by more than one test; use sharedPrefixGroup only when the test source makes the runs indistinguishable",
+            )
+            seen[prefix] = entry
+    groups: dict[str, list[dict]] = {}
+    for entry in entries:
+        for run in entry["runs"]:
+            group = run.get("sharedPrefixGroup")
+            if not group:
+                continue
+            require(
+                isinstance(group, str) and group,
+                f"{entry['id']}: sharedPrefixGroup must be a nonempty string",
+            )
+            groups.setdefault(group, []).append(run)
+    for group, runs in groups.items():
+        require(len(runs) >= 2, f"{lane}: sharedPrefixGroup {group!r} must cover at least two tests")
+        prefix = runs[0]["prefix"]
+        require(all(run["prefix"] == prefix for run in runs), f"{lane}: sharedPrefixGroup {group!r} mixes prefixes")
+        require(
+            all(run.get("expectedRuns", 1) == 1 for run in runs),
+            f"{lane}: sharedPrefixGroup {group!r} must expect one run per test",
+        )
+        tokens = [run.get("sharedMatchToken") for run in runs]
+        require(
+            all(isinstance(token, str) and PACKET_TOKEN_RE.fullmatch(token) for token in tokens),
+            f"{lane}: sharedPrefixGroup {group!r} needs one unique packet token per test",
+        )
+        require(len(set(tokens)) == len(tokens), f"{lane}: sharedPrefixGroup {group!r} reuses a match token")
+        shapes = {json.dumps({"scenario": run["scenario"], "reset": run["reset"]}, sort_keys=True) for run in runs}
+        require(len(shapes) == 1, f"{lane}: sharedPrefixGroup {group!r} has divergent scenario or reset")
+
+
+def _validate_entry_v2(entry, where: str, seen_ids: set[str], lane: str) -> None:
+    _check_keys(entry, {"id", "label", "name", "runs", "attachments"}, where)
+    identifier = entry.get("id")
+    require(isinstance(identifier, str) and identifier, f"{where}: test id required")
+    require(TEST_ID_RE.fullmatch(identifier), f"{where}: invalid test id {identifier!r}")
+    require(identifier not in seen_ids, f"{where}: duplicate test id {identifier!r}")
+    seen_ids.add(identifier)
+    require(isinstance(entry.get("label"), str) and entry["label"], f"{where}: label required")
+    runs = entry.get("runs")
+    require(isinstance(runs, list) and runs, f"{where}.runs must be a nonempty list")
+    for index, run in enumerate(runs):
+        _validate_run_v2(identifier, run, f"{where}.runs[{index}]", lane)
+    if "attachments" in entry:
+        _validate_attachments(entry["attachments"], f"{where}.attachments")
+
+
+def _validate_run_v2(identifier: str, run, where: str, lane: str) -> None:
+    _check_keys(run, RUN2_KEYS, where)
+    require(isinstance(run.get("prefix"), str) and run["prefix"], f"{where}: prefix required")
+    require(re.fullmatch(r"[A-Za-z0-9-]+", run["prefix"]) is not None, f"{where}: invalid prefix {run['prefix']!r}")
+    if run.get("artifacts") is False:
+        require(identifier in NO_ARTIFACT_TESTS, f"{where}: no-artifact exemption is not allowed for {identifier}")
+        require(set(run) == {"prefix", "artifacts"}, f"{where}: no-artifact runs cannot carry other fields")
+        return
+    if run.get("evidence") == "invalid-configuration":
+        require(
+            identifier
+            == "QuietControlUITests/QuietControlUITests/testInvalidTestConfigurationFailsWithoutRadioFallback()"
+            and lane == "ui"
+            and run["prefix"] == "invalid-",
+            f"{where}: invalid-configuration evidence is narrowly reserved for the invalid-config UI test",
+        )
+        require(run.get("expectedRuns", 1) == 0, f"{where}: invalid-configuration expects no harness run directory")
+        require(set(run) <= {"prefix", "evidence", "expectedRuns"}, f"{where}: invalid-configuration fields")
+        return
+    require("scenario" in run and isinstance(run["scenario"], str) and run["scenario"], f"{where}: scenario required")
+    _require_bool(run.get("reset"), f"{where}.reset")
+    expect = run.get("expect")
+    require(isinstance(expect, dict), f"{where}: expect required")
+    _check_keys(expect, EXPECT2_KEYS, f"{where}.expect")
+    if "files" in expect:
+        _check_keys(expect["files"], FILES_KEYS, f"{where}.expect.files")
+        for key in ("require", "forbid"):
+            values = expect["files"].get(key, [])
+            require(isinstance(values, list), f"{where}.expect.files.{key} must be a list")
+            for name in values:
+                require(
+                    isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]+", name),
+                    f"{where}: invalid file name {name!r}",
+                )
+    if "snapshot" in expect:
+        snapshot = expect["snapshot"]
+        _check_keys(snapshot, SNAPSHOT2_KEYS, f"{where}.expect.snapshot")
+        state = snapshot.get("state")
+        require(state in {"present", "absent", "corrupt"}, f"{where}: snapshot.state invalid")
+        if state == "present":
+            require(set(snapshot) <= {"state", "lastMode", "eq", "modes", "focusAncStrength", "focusWindBlock", "firmware"},
+                    f"{where}: unexpected present-snapshot fields")
+            _require_int(snapshot.get("lastMode"), f"{where}.expect.snapshot.lastMode")
+            _require_int_triplet(snapshot.get("eq"), f"{where}.expect.snapshot.eq")
+            if "modes" in snapshot:
+                modes = snapshot["modes"]
+                require(
+                    isinstance(modes, list) and modes and all(isinstance(m, int) and not isinstance(m, bool) for m in modes),
+                    f"{where}.expect.snapshot.modes must be a list of integers",
+                )
+            if "focusAncStrength" in snapshot:
+                _require_int(snapshot["focusAncStrength"], f"{where}.expect.snapshot.focusAncStrength")
+            if "focusWindBlock" in snapshot:
+                _require_bool(snapshot["focusWindBlock"], f"{where}.expect.snapshot.focusWindBlock")
+            if "firmware" in snapshot:
+                _require_string(snapshot["firmware"], f"{where}.expect.snapshot.firmware")
+        elif state == "corrupt":
+            require(set(snapshot) == {"state", "literal"}, f"{where}: corrupt snapshot needs only state and literal")
+            _require_string(snapshot.get("literal"), f"{where}.expect.snapshot.literal", nonempty=False)
+        else:
+            require(set(snapshot) == {"state"}, f"{where}: absent snapshot takes no other fields")
+    if "peripheral" in expect:
+        peripheral = expect["peripheral"]
+        _check_keys(peripheral, PERIPHERAL2_KEYS, f"{where}.expect.peripheral")
+        require(bool(peripheral), f"{where}: peripheral expectation must not be empty")
+        if "connected" in peripheral:
+            _require_bool(peripheral["connected"], f"{where}.expect.peripheral.connected")
+        if "mode" in peripheral:
+            _require_int(peripheral["mode"], f"{where}.expect.peripheral.mode")
+        if "eq" in peripheral:
+            _require_int_triplet(peripheral["eq"], f"{where}.expect.peripheral.eq")
+        if "multipoint" in peripheral:
+            _require_bool(peripheral["multipoint"], f"{where}.expect.peripheral.multipoint")
+        for key in ("firmware", "activeAudio"):
+            if key in peripheral:
+                _require_string(peripheral[key], f"{where}.expect.peripheral.{key}")
+        if "preferences" in peripheral:
+            preferences = peripheral["preferences"]
+            require(isinstance(preferences, dict) and preferences, f"{where}: preferences must be a nonempty object")
+            for key, value in preferences.items():
+                _require_string(key, f"{where}: preference name")
+                require(
+                    isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F ]+", value),
+                    f"{where}: preference {key} must be a hex payload string",
+                )
+    if "journal" in expect:
+        journal = expect["journal"]
+        _check_keys(journal, JOURNAL2_KEYS, f"{where}.expect.journal")
+        require(journal.get("state") in {"present", "absent"}, f"{where}: journal.state invalid")
+        if journal["state"] == "present":
+            allowed = {"state", "literal", "fields", "peripheralNotSynthetic"}
+            require(set(journal) <= allowed, f"{where}: unsupported retained-journal fields")
+            require(
+                "literal" in journal or "fields" in journal,
+                f"{where}: retained journal needs exact literal bytes or exact fields",
+            )
+            if "literal" in journal:
+                _require_string(journal["literal"], f"{where}.expect.journal.literal", nonempty=False)
+                parsed = parse_json_text(journal["literal"], f"{where}.expect.journal.literal")
+                _check_keys(parsed, {"peripheral", "firmware", "name", "payload"}, f"{where}.expect.journal.literal")
+            if "fields" in journal:
+                _check_keys(
+                    journal["fields"],
+                    {"peripheral", "firmware", "name", "payload"},
+                    f"{where}.expect.journal.fields",
+                )
+                for key, value in journal["fields"].items():
+                    _require_string(value, f"{where}.expect.journal.fields.{key}")
+            if "peripheralNotSynthetic" in journal:
+                _require_bool(journal["peripheralNotSynthetic"], f"{where}.expect.journal.peripheralNotSynthetic")
+                require(journal["peripheralNotSynthetic"], f"{where}: peripheralNotSynthetic cannot be false")
+        else:
+            require(set(journal) == {"state"}, f"{where}: absent journal takes no other fields")
+    if "defaults" in expect:
+        _check_keys(expect["defaults"], DEFAULTS_KEYS, f"{where}.expect.defaults")
+        preset = expect["defaults"].get("preset")
+        _check_keys(preset, PRESET_KEYS, f"{where}.expect.defaults.preset")
+        _require_string(preset.get("name"), f"{where}.expect.defaults.preset.name")
+        _require_int_triplet(preset.get("values"), f"{where}.expect.defaults.preset.values")
+    if "transcript" in expect:
+        _validate_transcript_v2(expect["transcript"], f"{where}.expect.transcript")
+    if "lifecycle" in expect:
+        lifecycle = expect["lifecycle"]
+        _check_keys(lifecycle, LIFECYCLE_KEYS, f"{where}.expect.lifecycle")
+        _require_string(lifecycle.get("rxPrefix"), f"{where}.expect.lifecycle.rxPrefix")
+        if "expectedTotal" in lifecycle:
+            _require_int(lifecycle["expectedTotal"], f"{where}.expect.lifecycle.expectedTotal")
+            require(set(lifecycle) == {"rxPrefix", "expectedTotal"}, f"{where}: expectedTotal stands alone")
+        else:
+            _require_string(lifecycle.get("beforeEvent"), f"{where}.expect.lifecycle.beforeEvent")
+            _require_string(lifecycle.get("afterEvent"), f"{where}.expect.lifecycle.afterEvent")
+            _require_int(lifecycle.get("expectedBefore"), f"{where}.expect.lifecycle.expectedBefore")
+            _require_int(lifecycle.get("expectedAfter"), f"{where}.expect.lifecycle.expectedAfter")
+            require(
+                lifecycle["expectedAfter"] > lifecycle["expectedBefore"],
+                f"{where}: lifecycle RX must increase after the release",
+            )
+
+
+def _validate_transcript_v2(transcript, where: str) -> None:
+    _check_keys(transcript, TRANSCRIPT2_KEYS, where)
+    scenarios = transcript.get("scenarios")
+    require(isinstance(scenarios, list) and scenarios, f"{where}.scenarios required")
+    require(all(isinstance(value, str) and value for value in scenarios), f"{where}: invalid scenario")
+    for key in ("order", "required", "forbidden"):
+        tokens = transcript.get(key, [])
+        require(isinstance(tokens, list), f"{where}.{key} must be a list")
+        for token in tokens:
+            require(
+                isinstance(token, str) and EVIDENCE_TOKEN_RE.fullmatch(token),
+                f"{where}: invalid {key} token {token!r}",
+            )
+    no_outbound = transcript.get("noOutboundScenarios", [])
+    require(isinstance(no_outbound, list), f"{where}.noOutboundScenarios must be a list")
+    messages = transcript.get("forbiddenMessages", [])
+    require(isinstance(messages, list) and all(isinstance(m, str) for m in messages), f"{where}: forbiddenMessages")
+    counts = transcript.get("counts", [])
+    require(isinstance(counts, list), f"{where}.counts must be a list")
+    for index, count in enumerate(counts):
+        _check_keys(count, COUNT_KEYS, f"{where}.counts[{index}]")
+        require(
+            isinstance(count.get("token"), str) and EVIDENCE_TOKEN_RE.fullmatch(count["token"]),
+            f"{where}.counts[{index}]: invalid token",
+        )
+        bounds = [key for key in ("equals", "atLeast", "atMost") if key in count]
+        require(bool(bounds), f"{where}.counts[{index}]: need equals/atLeast/atMost")
+        for key in bounds:
+            _require_int(count[key], f"{where}.counts[{index}].{key}")
+            require(count[key] >= 0, f"{where}.counts[{index}].{key} must be nonnegative")
+        if "equals" in count:
+            require(bounds == ["equals"], f"{where}.counts[{index}]: equals cannot be combined with bounds")
+        if "after" in count:
+            require(
+                isinstance(count["after"], str) and EVIDENCE_TOKEN_RE.fullmatch(count["after"]),
+                f"{where}.counts[{index}].after: invalid anchor",
+            )
+    between = transcript.get("noOutboundBetween", [])
+    require(isinstance(between, list), f"{where}.noOutboundBetween must be a list")
+    for index, rule in enumerate(between):
+        _check_keys(rule, BETWEEN_KEYS, f"{where}.noOutboundBetween[{index}]")
+        for key in ("start", "end"):
+            require(
+                isinstance(rule.get(key), str) and EVIDENCE_TOKEN_RE.fullmatch(rule[key]),
+                f"{where}.noOutboundBetween[{index}].{key}: invalid token",
+            )
+        if "prefix" in rule:
+            require(
+                isinstance(rule["prefix"], str) and re.fullmatch(r"[0-9a-fA-F]+", rule["prefix"]),
+                f"{where}.noOutboundBetween[{index}].prefix must be hex",
+            )
+    for key in ("requireEvents", "forbidEvents"):
+        events = transcript.get(key, [])
+        require(
+            isinstance(events, list) and all(isinstance(value, str) and value for value in events),
+            f"{where}.{key} must be a list of strings",
+        )
+    headers = transcript.get("segmentHeaders", [])
+    require(isinstance(headers, list), f"{where}.segmentHeaders must be a list")
+    for header in headers:
+        require(
+            isinstance(header, str) and re.fullmatch(r"[0-9a-fA-F]{2}", header),
+            f"{where}: invalid segment header {header!r}",
+        )
+    if "segmentHeadersAfter" in transcript:
+        _require_string(transcript["segmentHeadersAfter"], f"{where}.segmentHeadersAfter")
+
+
+def _validate_attachments(attachments, where: str) -> None:
+    _check_keys(attachments, ATTACHMENT_KEYS, where)
+    require(bool(attachments), f"{where}: empty attachment expectations")
+    if "audits" in attachments:
+        audits = attachments["audits"]
+        _check_keys(audits, AUDIT_KEYS, f"{where}.audits")
+        for key in ("contexts", "screenshots"):
+            values = audits.get(key)
+            require(
+                isinstance(values, list) and values and all(isinstance(v, str) and v for v in values),
+                f"{where}.audits.{key} must be a nonempty string list",
+            )
+        require(
+            len(set(audits["contexts"])) == len(audits["contexts"]),
+            f"{where}.audits.contexts must be unique",
+        )
+        require(
+            len(set(audits["screenshots"])) == len(audits["screenshots"]),
+            f"{where}.audits.screenshots must be unique",
+        )
+        require(
+            len(audits["contexts"]) == 12,
+            f"{where}.audits.contexts must name exactly the twelve audited contexts",
+        )
+    if "geometry" in attachments:
+        _require_bool(attachments["geometry"], f"{where}.geometry")
+        require(attachments["geometry"], f"{where}.geometry cannot be disabled")
+    if "invalidConfiguration" in attachments:
+        _require_bool(attachments["invalidConfiguration"], f"{where}.invalidConfiguration")
+        require(attachments["invalidConfiguration"], f"{where}.invalidConfiguration cannot be disabled")
+    if "journeyRunIDs" in attachments:
+        _require_int(attachments["journeyRunIDs"], f"{where}.journeyRunIDs")
+        require(attachments["journeyRunIDs"] >= 0, f"{where}.journeyRunIDs must be nonnegative")
 
 
 def _validate_entry(entry, where: str, seen_ids: set[str]) -> None:
@@ -838,6 +1256,582 @@ def _check_peripheral(path: Path, expected: dict, synthetic: dict, run_id: str) 
     except VerifyError as error:
         errors.append(str(error))
     return errors
+
+
+def _read_exact_bytes(path: Path, source: str) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise VerifyError(f"{source}: cannot read {path}: {error}") from error
+
+
+def _check_snapshot_v2(path: Path, expected: dict, synthetic: dict) -> list[str]:
+    state = expected["state"]
+    if state == "absent":
+        return [f"{path.name}: intentionally absent snapshot is present"] if path.exists() else []
+    if state == "corrupt":
+        if not path.is_file():
+            return [f"{path.name}: required corrupt snapshot is missing"]
+        try:
+            actual = _read_exact_bytes(path, path.name)
+        except VerifyError as error:
+            return [str(error)]
+        if actual != expected["literal"].encode("utf-8"):
+            return [f"{path.name}: corrupt evidence bytes do not match the exact seeded literal"]
+        try:
+            load_json_file(path)
+        except VerifyError:
+            return []
+        return [f"{path.name}: corrupt evidence unexpectedly parses as a valid snapshot"]
+
+    if not path.is_file():
+        return [f"{path.name}: missing confirmed snapshot"]
+    identity = dict(synthetic)
+    if "firmware" in expected:
+        identity["firmware"] = expected["firmware"]
+    errors = _check_snapshot(path, {"lastMode": expected["lastMode"], "eq": expected["eq"]}, identity)
+    try:
+        snapshot = load_json_file(path)
+    except VerifyError:
+        return errors
+    if not isinstance(snapshot, dict):
+        return errors
+    unknown = set(snapshot) - SNAPSHOT_FILE_KEYS
+    if unknown:
+        errors.append(f"{path.name}: unsupported snapshot fields {sorted(unknown)}")
+    if "modes" in expected:
+        actual = snapshot.get("modes")
+        indexes = None
+        if isinstance(actual, list):
+            indexes = [mode.get("index") for mode in actual if isinstance(mode, dict)]
+        if indexes != expected["modes"]:
+            errors.append(f"{path.name}: modes {indexes!r} != expected {expected['modes']!r}")
+    focus = None
+    modes = snapshot.get("modes")
+    if isinstance(modes, list):
+        focus = next((mode for mode in modes if isinstance(mode, dict) and mode.get("index") == 2), None)
+    if "focusAncStrength" in expected:
+        # The confirmed mode stores the inverted CNC scale; user-facing strength
+        # is 10 - rawCNC (7 strength is persisted as rawCNC 3).
+        raw = focus.get("rawCNC") if isinstance(focus, dict) else None
+        value = (10 - raw) if isinstance(raw, int) and not isinstance(raw, bool) else None
+        if value != expected["focusAncStrength"]:
+            errors.append(f"{path.name}: Focus strength {value!r} != expected {expected['focusAncStrength']!r}")
+    if "focusWindBlock" in expected:
+        value = focus.get("windBlock") if isinstance(focus, dict) else None
+        if value != expected["focusWindBlock"]:
+            errors.append(f"{path.name}: Focus windBlock {value!r} != expected {expected['focusWindBlock']!r}")
+    return errors
+
+
+def _check_peripheral_v2(path: Path, expected: dict, synthetic: dict, run_id: str) -> list[str]:
+    if not path.is_file():
+        return [f"{path.name}: missing peripheral state"]
+    try:
+        state = load_json_file(path)
+    except VerifyError as error:
+        return [str(error)]
+    if not isinstance(state, dict):
+        return [f"{path.name}: expected an object"]
+    errors: list[str] = []
+    unknown = set(state) - PERIPHERAL_FILE_KEYS
+    if unknown:
+        errors.append(f"{path.name}: unsupported fields {sorted(unknown)}")
+    missing = {"scenario", "runID", "connected", "mode", "eq", "devices", "updatedAt"} - set(state)
+    if missing:
+        return [f"{path.name}: missing fields {sorted(missing)}"]
+    if state["runID"] != run_id:
+        errors.append(f"{path.name}: runID {state['runID']!r} != {run_id!r}")
+    if state["scenario"] != expected.get("_scenario", state["scenario"]):
+        errors.append(f"{path.name}: scenario {state['scenario']!r} != expected {expected.get('_scenario')!r}")
+    for key in ("connected", "mode", "eq", "multipoint", "firmware", "activeAudio"):
+        if key in expected and state.get(key) != expected[key]:
+            errors.append(f"{path.name}: {key} {state.get(key)!r} != expected {expected[key]!r}")
+    if "devices" in state:
+        if not isinstance(state["devices"], list):
+            errors.append(f"{path.name}: devices must be a list")
+        else:
+            actual = [
+                {
+                    "address": normalize_packet(device.get("address", "")),
+                    "name": device.get("name"),
+                    "connected": device.get("connected"),
+                }
+                for device in state["devices"]
+                if isinstance(device, dict)
+            ]
+            if actual != [
+                {"address": normalize_packet(d["address"]), "name": d["name"], "connected": d["connected"]}
+                for d in synthetic["devices"]
+            ]:
+                errors.append(f"{path.name}: paired devices {actual!r} do not match the synthetic devices")
+    if "preferences" in expected:
+        preferences = state.get("preferences")
+        if not isinstance(preferences, dict):
+            errors.append(f"{path.name}: preferences must be an object")
+        else:
+            for key, value in expected["preferences"].items():
+                if preferences.get(key) != value:
+                    errors.append(f"{path.name}: preference {key} {preferences.get(key)!r} != {value!r}")
+    try:
+        iso8601(state["updatedAt"], f"{path.name}.updatedAt")
+    except VerifyError as error:
+        errors.append(str(error))
+    return errors
+
+
+def _check_journal(path: Path, expected: dict, synthetic: dict) -> list[str]:
+    state = expected["state"]
+    if state == "absent":
+        return [] if not path.exists() else [f"{path.name}: recovery journal unexpectedly retained"]
+    if not path.is_file():
+        return [f"{path.name}: required retained recovery journal is missing"]
+    try:
+        actual = _read_exact_bytes(path, path.name)
+    except VerifyError as error:
+        return [str(error)]
+    if "literal" in expected:
+        if actual != expected["literal"].encode("utf-8"):
+            return [f"{path.name}: retained journal bytes differ from the exact seeded checkpoint"]
+        return []
+    try:
+        parsed = parse_json_text(actual.decode("utf-8"), path.name)
+    except (UnicodeDecodeError, VerifyError) as error:
+        return [f"{path.name}: invalid retained journal: {error}"]
+    if not isinstance(parsed, dict):
+        return [f"{path.name}: retained journal must be an object"]
+    errors = []
+    for key, value in expected.get("fields", {}).items():
+        if parsed.get(key) != value:
+            errors.append(f"{path.name}: journal {key} {parsed.get(key)!r} != {value!r}")
+    if expected.get("peripheralNotSynthetic"):
+        if parsed.get("peripheral") == synthetic["peripheralUUID"]:
+            errors.append(f"{path.name}: mismatch journal must name a different synthetic peripheral")
+    return errors
+
+
+def _load_plist(path: Path):
+    import plistlib
+
+    try:
+        with open(path, "rb") as handle:
+            return plistlib.load(handle)
+    except (OSError, ValueError, plistlib.InvalidFileException) as error:
+        raise VerifyError(f"cannot read defaults plist {path}: {error}") from error
+
+
+def _check_defaults(export_root: Path, suite: str, expected: dict) -> list[str]:
+    name = suite + ".plist"
+    candidates = [export_root / "Preferences" / name, export_root / "Library" / "Preferences" / name]
+    path = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if path is None:
+        return [f"missing isolated defaults plist {name}"]
+    try:
+        defaults = _load_plist(path)
+    except VerifyError as error:
+        return [str(error)]
+    if not isinstance(defaults, dict):
+        return [f"{name}: expected a dictionary"]
+    raw = defaults.get("quietcontrol.eqPresets")
+    if not isinstance(raw, bytes):
+        return [f"{name}: quietcontrol.eqPresets is not encoded preset data"]
+    try:
+        preset_text = raw.decode("utf-8")
+        presets = parse_json_text(preset_text, f"{name}:quietcontrol.eqPresets")
+    except (UnicodeDecodeError, VerifyError) as error:
+        return [f"{name}: invalid preset payload: {error}"]
+    expected_preset = expected["preset"]
+    if not isinstance(presets, list):
+        return [f"{name}: presets must be an encoded list"]
+    for preset in presets:
+        if not isinstance(preset, dict):
+            continue
+        if preset.get("name") == expected_preset["name"]:
+            if preset.get("values") != expected_preset["values"]:
+                return [
+                    f"{name}: preset {expected_preset['name']!r} values {preset.get('values')!r} "
+                    f"!= {expected_preset['values']!r}"
+                ]
+            return []
+    return [f"{name}: preset {expected_preset['name']!r} is not persisted"]
+
+
+def _check_lifecycle(path: Path, expected: dict) -> list[str]:
+    if not path.is_file():
+        return [f"{path.name}: missing lifecycle diagnostics"]
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        return [f"{path.name}: cannot read: {error}"]
+    messages: list[str] = []
+    for index, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            return [f"{path.name}:{index}: blank lifecycle line"]
+        try:
+            record = parse_json_text(line, f"{path.name}:{index}")
+        except VerifyError as error:
+            return [str(error)]
+        if not isinstance(record, dict) or not isinstance(record.get("message"), str):
+            return [f"{path.name}:{index}: lifecycle record needs a message"]
+        messages.append(record["message"])
+    prefix = normalize_packet(expected["rxPrefix"]).lower()
+    def rx_count(items: list[str]) -> int:
+        total = 0
+        for message in items:
+            if not message.startswith("RX "):
+                continue
+            if normalize_packet(message[3:]).lower().startswith(prefix):
+                total += 1
+        return total
+    if "expectedTotal" in expected:
+        total = rx_count(messages)
+        if total != expected["expectedTotal"]:
+            return [f"{path.name}: production RX {prefix} occurs {total} times, expected {expected['expectedTotal']}"]
+        return []
+    before_index = next((i for i, m in enumerate(messages) if expected["beforeEvent"] in m), None)
+    after_index = next((i for i, m in enumerate(messages) if expected["afterEvent"] in m), None)
+    if before_index is None:
+        return [f"{path.name}: lifecycle event {expected['beforeEvent']!r} is missing"]
+    if after_index is None:
+        return [f"{path.name}: lifecycle event {expected['afterEvent']!r} is missing"]
+    before = rx_count(messages[: before_index + 1])
+    after = rx_count(messages[: after_index + 1])
+    errors = []
+    if before != expected["expectedBefore"]:
+        errors.append(f"{path.name}: production RX {prefix} before release is {before}, expected {expected['expectedBefore']}")
+    if after != expected["expectedAfter"]:
+        errors.append(f"{path.name}: production RX {prefix} after release is {after}, expected {expected['expectedAfter']}")
+    return errors
+
+
+def _check_transcript_v2(path: Path, expect: dict, synthetic: dict) -> list[str]:
+    if not path.is_file():
+        return [f"{path.name}: missing transport transcript"]
+    errors = _check_transcript(path, {"scenarios": expect["scenarios"]}, synthetic)
+    try:
+        rows = _transcript_rows(path)
+    except VerifyError:
+        return errors
+    for index, row in enumerate(rows, 1):
+        unknown = set(row) - {
+            "sequence",
+            "timestamp",
+            "direction",
+            "kind",
+            "bytes",
+            "scenario",
+            "peripheral",
+            "connection",
+            "message",
+        }
+        if unknown:
+            errors.append(f"{path.name}:{index}: unsupported transcript fields {sorted(unknown)}")
+
+    def matches(row, token: str) -> bool:
+        if token.startswith("event:"):
+            return row.get("kind") == "event" and token[6:] in (row.get("message") or "")
+        direction, packet = token.split(":", 1)
+        actual = normalize_packet(row.get("bytes", ""))
+        if packet.endswith("*"):
+            matched = actual.startswith(normalize_packet(packet[:-1]))
+        else:
+            matched = actual == normalize_packet(packet)
+        return row.get("direction") == direction and row.get("kind") in {"bmap", "segment"} and matched
+
+    position = 0
+    for token in expect.get("order", []):
+        found = next((i for i in range(position, len(rows)) if matches(rows[i], token)), None)
+        if found is None:
+            errors.append(f"{path.name}: ordered packet {token!r} missing after record {position}")
+            break
+        position = found + 1
+    for token in expect.get("required", []):
+        if not any(matches(row, token) for row in rows):
+            errors.append(f"{path.name}: required packet {token!r} missing")
+    for token in expect.get("forbidden", []):
+        if any(matches(row, token) for row in rows):
+            errors.append(f"{path.name}: forbidden packet {token!r} present")
+    for rule in expect.get("counts", []):
+        scope = rows
+        if "after" in rule:
+            anchor = next((i for i, row in enumerate(rows) if matches(row, rule["after"])), None)
+            if anchor is None:
+                errors.append(f"{path.name}: count anchor {rule['after']!r} is missing")
+                continue
+            scope = rows[anchor + 1 :]
+        actual = sum(1 for row in scope if matches(row, rule["token"]))
+        if "equals" in rule and actual != rule["equals"]:
+            errors.append(f"{path.name}: {rule['token']!r} occurs {actual} times, expected exactly {rule['equals']}")
+        if actual < rule.get("atLeast", 0):
+            errors.append(f"{path.name}: {rule['token']!r} occurs {actual} times, expected at least {rule['atLeast']}")
+        if "atMost" in rule and actual > rule["atMost"]:
+            errors.append(f"{path.name}: {rule['token']!r} occurs {actual} times, expected at most {rule['atMost']}")
+    for rule in expect.get("noOutboundBetween", []):
+        start = next((i for i, row in enumerate(rows) if matches(row, rule["start"])), None)
+        end = next((i for i, row in enumerate(rows) if matches(row, rule["end"])), None)
+        if start is None or end is None or end <= start:
+            errors.append(f"{path.name}: noOutboundBetween anchors are missing or out of order")
+            continue
+        allowed_prefix = rule.get("prefix")
+        offenders = [
+            row.get("bytes")
+            for row in rows[start + 1 : end]
+            if row.get("direction") == "outbound"
+            and row.get("kind") in {"segment", "bmap"}
+            and (
+                allowed_prefix is None
+                or normalize_packet(row.get("bytes", "")).startswith(normalize_packet(allowed_prefix))
+            )
+        ]
+        if offenders:
+            errors.append(f"{path.name}: unexpected outbound traffic between {rule['start']!r} and {rule['end']!r}")
+    if "segmentHeaders" in expect and "segmentHeadersAfter" not in expect:
+        actual = [
+            normalize_packet(row.get("bytes", ""))[:2]
+            for row in rows
+            if row.get("direction") == "inbound" and row.get("kind") == "segment"
+        ]
+        expected = [header.lower() for header in expect["segmentHeaders"]]
+        if actual != expected:
+            errors.append(f"{path.name}: inbound segment headers {actual} != expected {expected}")
+    if "segmentHeadersAfter" in expect:
+        anchor_text = expect["segmentHeadersAfter"]
+        anchor = next((i for i, row in enumerate(rows) if anchor_text in (row.get("message") or "")), None)
+        if anchor is None:
+            errors.append(f"{path.name}: segment header anchor {anchor_text!r} is missing")
+        else:
+            actual = [
+                normalize_packet(row.get("bytes", ""))[:2]
+                for row in rows[anchor + 1 :]
+                if row.get("direction") == "inbound" and row.get("kind") == "segment"
+            ]
+            expected = [header.lower() for header in expect.get("segmentHeaders", [])]
+            if actual != expected:
+                errors.append(f"{path.name}: post-release segment headers {actual} != expected {expected}")
+    messages = [row.get("message") or "" for row in rows]
+    for text in expect.get("requireEvents", []):
+        if not any(text in message for message in messages):
+            errors.append(f"{path.name}: required event {text!r} is missing")
+    for text in expect.get("forbidEvents", []):
+        if any(text in message for message in messages):
+            errors.append(f"{path.name}: forbidden event {text!r} is present")
+    forbidden_scenarios = set(expect.get("noOutboundScenarios", []))
+    for index, row in enumerate(rows, 1):
+        if (
+            row.get("scenario") in forbidden_scenarios
+            and row.get("direction") == "outbound"
+            and row.get("kind") in {"segment", "bmap"}
+        ):
+            errors.append(f"{path.name}:{index}: outbound bytes in scenario {row['scenario']!r}")
+    for message in expect.get("forbiddenMessages", []):
+        if any(message in (row.get("message") or "") for row in rows):
+            errors.append(f"{path.name}: forbidden transcript message {message!r} present")
+    return errors
+
+
+def inspect_run_evidence(
+    spec: dict,
+    run_dir: Path,
+    export_root: Path,
+    synthetic: dict,
+    run_id: str,
+    scenario: str,
+) -> list[str]:
+    identifier = spec.get("_identifier", "test")
+    errors: list[str] = []
+    config_path = run_dir / "test-config.json"
+    if not config_path.is_file():
+        return [f"{identifier}: missing test-config.json"]
+    try:
+        config = load_json_file(config_path)
+    except VerifyError as error:
+        return [f"{identifier}: {error}"]
+    if not isinstance(config, dict):
+        return [f"{identifier}: test-config.json must be an object"]
+    unknown = set(config) - CONFIG_FILE_KEYS
+    if unknown:
+        errors.append(f"{identifier}: test-config.json has unsupported fields {sorted(unknown)}")
+    missing = CONFIG_FILE_KEYS - set(config)
+    if missing:
+        return [f"{identifier}: test-config.json missing fields {sorted(missing)}"]
+    if config["runID"] != run_id:
+        errors.append(f"{identifier}: test-config runID {config['runID']!r} != directory {run_id!r}")
+    if config["scenario"] != scenario:
+        errors.append(f"{identifier}: test-config scenario {config['scenario']!r} != manifest {scenario!r}")
+    if config["reset"] is not spec["reset"]:
+        errors.append(f"{identifier}: test-config reset {config['reset']!r} != manifest {spec['reset']!r}")
+    if config["peripheral"] != synthetic["peripheralUUID"]:
+        errors.append(f"{identifier}: test-config peripheral is not the synthetic identity")
+    expected_suite = synthetic["defaultsSuitePrefix"] + run_id
+    if config["defaultsSuite"] != expected_suite:
+        errors.append(f"{identifier}: defaults suite {config['defaultsSuite']!r} != {expected_suite!r}")
+
+    expect = spec["expect"]
+    files = expect.get("files", {})
+    for name in files.get("require", []):
+        if not (run_dir / name).is_file():
+            errors.append(f"{identifier}: required evidence file {name} is missing")
+    for name in files.get("forbid", []):
+        if (run_dir / name).exists():
+            errors.append(f"{identifier}: forbidden evidence file {name} is present")
+    if "snapshot" in expect:
+        errors.extend(_check_snapshot_v2(run_dir / "LastConfirmedState.json", expect["snapshot"], synthetic))
+    if "peripheral" in expect:
+        peripheral = dict(expect["peripheral"])
+        peripheral["_scenario"] = scenario
+        errors.extend(_check_peripheral_v2(run_dir / "peripheral-state.json", peripheral, synthetic, run_id))
+    if "journal" in expect:
+        errors.extend(_check_journal(run_dir / "PreferenceRecovery.json", expect["journal"], synthetic))
+    if "defaults" in expect:
+        errors.extend(_check_defaults(export_root, expected_suite, expect["defaults"]))
+    if "transcript" in expect:
+        errors.extend(_check_transcript_v2(run_dir / "transport.jsonl", expect["transcript"], synthetic))
+    if "lifecycle" in expect:
+        errors.extend(_check_lifecycle(run_dir / "LifecycleDiagnostics.jsonl", expect["lifecycle"]))
+    return errors
+
+
+def _entry_runs(entry: dict) -> list[dict]:
+    return entry.get("runs") or [entry.get("run")]
+
+
+def _run_directory_matches_token(run_dir: Path, token: str) -> bool:
+    try:
+        rows = _transcript_rows(run_dir / "transport.jsonl")
+    except VerifyError:
+        return False
+    direction, packet = token.split(":", 1)
+    return any(
+        row.get("direction") == direction
+        and row.get("kind") in {"bmap", "segment"}
+        and normalize_packet(row.get("bytes", "")) == normalize_packet(packet)
+        for row in rows
+    )
+
+
+def map_and_inspect_lane(
+    entries: list[dict],
+    export_root: Path,
+    new_runs: set[str],
+    synthetic: dict,
+    lane: str,
+) -> tuple[list[str], list[dict]]:
+    """Map the lane's newly created run directories to the manifest exactly once."""
+    errors: list[str] = []
+    claimed: dict[str, dict] = {}
+    details: list[dict] = []
+    deferred: dict[str, list[tuple[dict, dict]]] = {}
+
+    prefix_owners: list[tuple[str, dict]] = []
+    for entry in entries:
+        for spec in _entry_runs(entry):
+            if spec.get("artifacts") is False or spec.get("evidence") == "invalid-configuration":
+                continue
+            prefix_owners.append((spec["prefix"], spec))
+
+    def longest_owner(name: str) -> dict | None:
+        matches = [(len(prefix), spec) for prefix, spec in prefix_owners if name.startswith(prefix)]
+        if not matches:
+            return None
+        longest = max(length for length, _ in matches)
+        owners = {id(spec): spec for length, spec in matches if length == longest}
+        return next(iter(owners.values())) if len(owners) == 1 else None
+
+    for entry in entries:
+        for spec in _entry_runs(entry):
+            if spec.get("artifacts") is False:
+                leaked = sorted(name for name in new_runs if name.startswith(spec["prefix"]))
+                if leaked:
+                    errors.append(f"{entry['id']}: unexpected app-container artifacts {leaked} for a no-artifact test")
+                continue
+            if spec.get("evidence") == "invalid-configuration":
+                leaked = sorted(name for name in new_runs if name.startswith(spec["prefix"]))
+                if leaked:
+                    errors.append(f"{entry['id']}: invalid configuration created harness run directories {leaked}")
+                continue
+            group = spec.get("sharedPrefixGroup")
+            if group:
+                deferred.setdefault(group, []).append((entry, spec))
+                continue
+            matching = sorted(
+                name
+                for name in new_runs
+                if name.startswith(spec["prefix"]) and longest_owner(name) is spec
+            )
+            expected = spec.get("expectedRuns", 1)
+            if len(matching) != expected:
+                errors.append(
+                    f"{entry['id']}: expected exactly {expected} run director{'y' if expected == 1 else 'ies'} "
+                    f"with prefix {spec['prefix']!r}, found {matching}"
+                )
+                continue
+            for name in matching:
+                if name in claimed:
+                    errors.append(f"{entry['id']}: run directory {name!r} is reused by another test")
+                    continue
+                claimed[name] = spec
+                details.append({"id": entry["id"], "runID": name, "prefix": spec["prefix"]})
+
+    for group, members in deferred.items():
+        prefix = members[0][1]["prefix"]
+        matching = sorted(name for name in new_runs if name.startswith(prefix) and name not in claimed)
+        expected = sum(spec.get("expectedRuns", 1) for _, spec in members)
+        if len(matching) != expected:
+            errors.append(
+                f"sharedPrefixGroup {group!r}: expected {expected} run directories with prefix {prefix!r}, found {matching}"
+            )
+            continue
+        assigned: dict[str, str] = {}
+        for name in matching:
+            hits = [
+                (entry, spec)
+                for entry, spec in members
+                if _run_directory_matches_token(
+                    export_root / "ApplicationSupport" / "QuietControlUITests" / name,
+                    spec["sharedMatchToken"],
+                )
+            ]
+            if len(hits) != 1:
+                errors.append(
+                    f"sharedPrefixGroup {group!r}: run {name!r} matches {len(hits)} tests; evidence is ambiguous"
+                )
+                continue
+            entry, spec = hits[0]
+            if id(spec) in assigned:
+                errors.append(f"sharedPrefixGroup {group!r}: run {name!r} duplicates evidence for {entry['id']}")
+                continue
+            assigned[id(spec)] = name
+            claimed[name] = spec
+            details.append({"id": entry["id"], "runID": name, "prefix": spec["prefix"], "shared": group})
+        for entry, spec in members:
+            if id(spec) not in assigned:
+                errors.append(f"sharedPrefixGroup {group!r}: no run directory proves {entry['id']}")
+
+    extras = sorted(new_runs - set(claimed))
+    for name in extras:
+        errors.append(f"{lane}: exported run directory {name!r} is not claimed by the manifest")
+
+    for entry in entries:
+        for spec in _entry_runs(entry):
+            if spec.get("artifacts") is False or spec.get("evidence") == "invalid-configuration":
+                continue
+            assigned = [name for name, owner in claimed.items() if owner is spec]
+            if not assigned:
+                continue
+            for name in assigned:
+                tagged = dict(spec)
+                tagged["_identifier"] = entry["id"]
+                errors.extend(
+                    inspect_run_evidence(
+                        tagged,
+                        export_root / "ApplicationSupport" / "QuietControlUITests" / name,
+                        export_root,
+                        synthetic,
+                        name,
+                        spec["scenario"],
+                    )
+                )
+    return errors, details
 
 
 def exported_run_names(export_root: Path) -> set[str]:
@@ -1325,7 +2319,9 @@ def _run_xcode_tests(
     }
 
 
-def _export_container(runner: CommandRunner, run_dir: Path, simulator: dict, label: str) -> Path:
+def _export_container(
+    runner: CommandRunner, run_dir: Path, simulator: dict, label: str, *, allow_empty: bool = False
+) -> Path:
     result = runner.run(
         ["xcrun", "simctl", "get_app_container", simulator["udid"], BUNDLE_ID, "data"],
         f"{label}-container",
@@ -1336,14 +2332,407 @@ def _export_container(runner: CommandRunner, run_dir: Path, simulator: dict, lab
     container = Path(result.stdout.strip())
     require(container.is_dir(), f"{label}: app data container {container} is missing")
     source = container / "Library" / "Application Support" / "QuietControlUITests"
-    require(source.is_dir(), f"{label}: no QuietControlUITests evidence in the app container")
+    if not source.is_dir() and not allow_empty:
+        require(False, f"{label}: no QuietControlUITests evidence in the app container")
     destination = run_dir / "artifacts" / label
     destination.mkdir(parents=True, exist_ok=True)
     target = destination / "ApplicationSupport" / "QuietControlUITests"
     if target.exists():
         shutil.rmtree(target)
-    shutil.copytree(source, target)
+    if source.is_dir():
+        shutil.copytree(source, target)
+    else:
+        target.mkdir(parents=True, exist_ok=True)
+    preferences = container / "Library" / "Preferences"
+    preferences_target = destination / "Preferences"
+    if preferences.is_dir():
+        if preferences_target.exists():
+            shutil.rmtree(preferences_target)
+        shutil.copytree(preferences, preferences_target)
     return destination
+
+
+def _normalize_attachment_name(name: str) -> str:
+    match = re.match(r"^(.*)_\d+_[0-9A-Fa-f-]+(\.\w+)$", name)
+    if match:
+        name = match.group(1) + match.group(2)
+    return re.sub(r"\.(?:txt|png|jpe?g|heic)$", "", name, flags=re.IGNORECASE)
+
+
+def _export_attachments(runner: CommandRunner, result_bundle: Path, run_dir: Path, label: str) -> dict:
+    """Export the xcresult attachment manifest and files associated with this lane."""
+    output = run_dir / "attachments" / label
+    if output.exists():
+        shutil.rmtree(output)
+    output.mkdir(parents=True, exist_ok=True)
+    result = runner.run(
+        [
+            "xcrun",
+            "xcresulttool",
+            "export",
+            "attachments",
+            "--path",
+            str(result_bundle),
+            "--output-path",
+            str(output),
+        ],
+        f"{label}-attachments",
+        SHORT_TIMEOUT,
+        capture=True,
+    )
+    if result.returncode != 0:
+        raise VerifyError(f"{label}: cannot export xcresult attachments; see {result.log_path}")
+    manifest_path = output / "manifest.json"
+    if not manifest_path.is_file():
+        raise VerifyError(f"{label}: xcresult attachment manifest is missing")
+    document = load_json_file(manifest_path)
+    require(isinstance(document, list), f"{label}: attachment manifest must be a list")
+    by_test: dict[str, dict[str, Path]] = {}
+    errors: list[str] = []
+    for group in document:
+        require(isinstance(group, dict), f"{label}: attachment group must be an object")
+        _check_keys(group, {"attachments", "testIdentifier", "testIdentifierURL"}, f"{label}.attachments")
+        identifier = group.get("testIdentifier")
+        require(isinstance(identifier, str) and identifier, f"{label}: attachment group needs a test identifier")
+        records = group.get("attachments")
+        require(isinstance(records, list), f"{label}: attachments must be a list")
+        names: dict[str, Path] = {}
+        for record in records:
+            require(isinstance(record, dict), f"{label}: attachment record must be an object")
+            _check_keys(
+                record,
+                {
+                    "configurationName",
+                    "deviceId",
+                    "deviceName",
+                    "exportedFileName",
+                    "isAssociatedWithFailure",
+                    "suggestedHumanReadableName",
+                    "timestamp",
+                },
+                f"{label}.attachment",
+            )
+            exported = record.get("exportedFileName")
+            suggested = record.get("suggestedHumanReadableName")
+            require(isinstance(exported, str) and exported, f"{label}: attachment filename is missing")
+            require(isinstance(suggested, str) and suggested, f"{label}: attachment suggested name is missing")
+            path = output / exported
+            if not path.is_file():
+                errors.append(f"{label}: exported attachment {exported!r} is missing")
+                continue
+            name = _normalize_attachment_name(suggested)
+            if name in names:
+                errors.append(f"{label}: duplicate attachment name {name!r} for {identifier}")
+                continue
+            names[name] = path
+        by_test[identifier] = names
+    if errors:
+        raise VerifyError("; ".join(errors))
+    return {"root": output, "tests": by_test}
+
+
+def _test_method(identifier: str) -> str:
+    value = identifier[:-2] if identifier.endswith("()") else identifier
+    return value.split("/")[-1]
+
+
+def _attachments_for(attachments: dict, identifier: str) -> tuple[dict[str, Path], list[str]]:
+    method = _test_method(identifier)
+    matches = {
+        key: value
+        for key, value in attachments["tests"].items()
+        if _test_method(key) == method
+    }
+    if len(matches) != 1:
+        return {}, [f"{identifier}: expected exactly one xcresult attachment group, found {sorted(matches)}"]
+    return next(iter(matches.values())), []
+
+
+def _check_audit_summary(path: Path, context: str) -> list[str]:
+    errors: list[str] = []
+    try:
+        summary = load_json_file(path)
+    except VerifyError as error:
+        return [f"{path.name}: {error}"]
+    if not isinstance(summary, dict):
+        return [f"{path.name}: audit summary must be an object"]
+    _check_keys(
+        summary,
+        {"screen", "auditTypes", "counts", "countsNote", "policy", "issues"},
+        f"{path.name}",
+    )
+    if summary.get("screen") != context:
+        errors.append(f"{path.name}: screen {summary.get('screen')!r} != required context {context!r}")
+    counts = summary.get("counts")
+    if not isinstance(counts, dict):
+        return errors + [f"{path.name}: counts must be an object"]
+    _check_keys(counts, {"reported", "ignored", "failed"}, f"{path.name}.counts")
+    for key in ("reported", "ignored", "failed"):
+        _require_int(counts.get(key), f"{path.name}.counts.{key}")
+    issues = summary.get("issues")
+    if not isinstance(issues, list):
+        return errors + [f"{path.name}: issues must be a list"]
+    if counts["reported"] != len(issues):
+        errors.append(f"{path.name}: reported {counts['reported']} != {len(issues)} raw issues")
+    if counts["reported"] != counts["ignored"] + counts["failed"]:
+        errors.append(f"{path.name}: reported counts are inconsistent (reported != ignored + failed)")
+    policy = summary.get("policy")
+    if not isinstance(policy, dict):
+        errors.append(f"{path.name}: policy must be an object")
+    else:
+        if policy.get("substringExemptions") is not False:
+            errors.append(f"{path.name}: substring exemptions are not allowed")
+        if policy.get("coordinateExemptions") is not False:
+            errors.append(f"{path.name}: coordinate exemptions are not allowed")
+        if policy.get("enabledIssueSuppression") != 0:
+            errors.append(f"{path.name}: enabled issue suppression must be 0")
+    ignored = 0
+    failed = 0
+    for index, issue in enumerate(issues):
+        where = f"{path.name}.issues[{index}]"
+        if not isinstance(issue, dict):
+            errors.append(f"{where}: issue must be an object")
+            failed += 1
+            continue
+        _check_keys(
+            issue,
+            {"auditType", "description", "identifier", "label", "enabled", "ignored", "exemption", "frame"},
+            where,
+        )
+        is_ignored = issue.get("ignored")
+        if not isinstance(is_ignored, bool):
+            errors.append(f"{where}: ignored must be a boolean")
+            failed += 1
+            continue
+        if is_ignored:
+            ignored += 1
+            if issue.get("auditType") != "contrast" or issue.get("enabled") is not False:
+                errors.append(f"{where}: only a contrast issue on a disabled element may be ignored")
+            if not isinstance(issue.get("exemption"), str) or "disabled" not in issue["exemption"]:
+                errors.append(f"{where}: ignored issue needs the disabled-control exemption")
+        else:
+            failed += 1
+        if "frame" in issue:
+            frame = issue["frame"]
+            if not isinstance(frame, dict):
+                errors.append(f"{where}: frame must be an object")
+            else:
+                _check_keys(frame, {"x", "y", "width", "height"}, f"{where}.frame")
+                for key in ("x", "y", "width", "height"):
+                    value = frame.get(key)
+                    if not isinstance(value, (int, float)) or isinstance(value, bool):
+                        errors.append(f"{where}.frame.{key} must be a number")
+                    elif not (value == value and abs(value) != float("inf")):
+                        errors.append(f"{where}.frame.{key} must be finite")
+                    elif key in {"width", "height"} and value <= 0:
+                        errors.append(f"{where}.frame.{key} must be positive")
+                if all(isinstance(frame.get(k), (int, float)) for k in ("x", "y", "width", "height")):
+                    if frame["x"] + frame["width"] > 100000 or frame["y"] + frame["height"] > 100000:
+                        errors.append(f"{where}: frame is outside any possible screen")
+    if ignored != counts["ignored"]:
+        errors.append(f"{path.name}: ignored count {counts['ignored']} != raw ignored {ignored}")
+    if failed != counts["failed"]:
+        errors.append(f"{path.name}: failed count {counts['failed']} != raw failed {failed}")
+    if counts["failed"] != 0:
+        errors.append(f"{path.name}: accessibility audit recorded {counts['failed']} enabled issue(s)")
+    return errors
+
+
+def _check_geometry(path: Path) -> list[str]:
+    try:
+        geometry = load_json_file(path)
+    except VerifyError as error:
+        return [f"{path.name}: {error}"]
+    if not isinstance(geometry, dict):
+        return [f"{path.name}: geometry must be an object"]
+    _check_keys(
+        geometry,
+        {"screen", "elements", "stableSeconds", "before", "after", "heroClearAfter", "strength"},
+        f"{path.name}",
+    )
+    errors: list[str] = []
+    expected_elements = ["mode-summary", "mode-strength", "mode-cancel", "mode-save-toolbar", "mode-save-bottom"]
+    if geometry.get("screen") != "editor-large-text":
+        errors.append(f"{path.name}: screen must be editor-large-text")
+    if geometry.get("elements") != expected_elements:
+        errors.append(f"{path.name}: elements are not the five ordered editor frames")
+    if geometry.get("strength") != "7 of 10":
+        errors.append(f"{path.name}: audited strength must be 7 of 10")
+    if geometry.get("heroClearAfter") is not True:
+        errors.append(f"{path.name}: heroClearAfter must be true")
+    if geometry.get("stableSeconds") != 0.5:
+        errors.append(f"{path.name}: stableSeconds must be 0.5")
+    frames = {}
+    for key in ("before", "after"):
+        values = geometry.get(key)
+        if not isinstance(values, list) or len(values) != 5:
+            errors.append(f"{path.name}: {key} must have five frames")
+            continue
+        parsed = []
+        for index, frame in enumerate(values):
+            where = f"{path.name}.{key}[{index}]"
+            if not isinstance(frame, dict):
+                errors.append(f"{where}: frame must be an object")
+                parsed = None
+                break
+            _check_keys(frame, {"x", "y", "width", "height"}, where)
+            numbers = {}
+            for field in ("x", "y", "width", "height"):
+                value = frame.get(field)
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    errors.append(f"{where}.{field} must be a number")
+                    numbers = None
+                    break
+                if value != value or abs(value) == float("inf"):
+                    errors.append(f"{where}.{field} must be finite")
+                    numbers = None
+                    break
+                numbers[field] = value
+            if numbers is None:
+                parsed = None
+                break
+            if numbers["width"] <= 0 or numbers["height"] <= 0:
+                errors.append(f"{where}: frame must have positive size")
+            if numbers["x"] < 0 or numbers["y"] < 0:
+                errors.append(f"{where}: frame cannot start outside the screen")
+            if numbers["x"] + numbers["width"] > 100000 or numbers["y"] + numbers["height"] > 100000:
+                errors.append(f"{where}: frame is outside any possible screen")
+            parsed.append(numbers)
+        frames[key] = parsed
+    if isinstance(frames.get("before"), list) and isinstance(frames.get("after"), list):
+        if frames["before"] != frames["after"]:
+            errors.append(f"{path.name}: before and after audit frames differ")
+        summary, strength, cancel, top_save, bottom_save = frames["before"]
+        if summary["y"] < cancel["y"] + cancel["height"] + 8:
+            errors.append(f"{path.name}: mode-summary overlaps the pinned Cancel row")
+        if strength["y"] + strength["height"] > bottom_save["y"] - 16:
+            errors.append(f"{path.name}: mode-strength overlaps the pinned bottom Save")
+        if top_save["x"] <= cancel["x"] + cancel["width"]:
+            errors.append(f"{path.name}: top Save is not beside Cancel in the pinned row")
+        if top_save["y"] != cancel["y"]:
+            errors.append(f"{path.name}: top Save is not in the same pinned row as Cancel")
+        if bottom_save["y"] <= strength["y"]:
+            errors.append(f"{path.name}: bottom Save is not below the editor hero")
+    return errors
+
+
+def _validate_attachments_for_entry(
+    entry: dict,
+    attachments: dict,
+    run_details: list[dict],
+) -> list[str]:
+    spec = entry.get("attachments")
+    if not spec:
+        return []
+    names, errors = _attachments_for(attachments, entry["id"])
+    if errors:
+        return errors
+
+    if spec.get("invalidConfiguration"):
+        text_names = {"journey-invalid-run", "journey-invalid-scenario"}
+        missing = sorted(text_names - set(names))
+        if missing:
+            errors.append(f"{entry['id']}: missing invalid-configuration attachments {missing}")
+        for screenshot in ("invalid-run-error", "invalid-scenario-error"):
+            if screenshot not in names:
+                errors.append(f"{entry['id']}: missing invalid-configuration screenshot {screenshot!r}")
+            else:
+                try:
+                    data = _read_exact_bytes(names[screenshot], screenshot)
+                except VerifyError as error:
+                    errors.append(str(error))
+                    continue
+                if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                    errors.append(f"{entry['id']}: {screenshot} is not a PNG screenshot")
+        run_text = ""
+        if "journey-invalid-run" in names:
+            try:
+                run_text = names["journey-invalid-run"].read_text(encoding="utf-8")
+            except OSError as error:
+                errors.append(f"{entry['id']}: cannot read journey-invalid-run: {error}")
+            else:
+                first = run_text.splitlines()[0] if run_text.splitlines() else ""
+                if not first.startswith("runID: invalid-"):
+                    errors.append(f"{entry['id']}: journey-invalid-run does not record the invalid run ID")
+                if "QUIETCONTROL_TEST_RUN_ID" not in run_text:
+                    errors.append(f"{entry['id']}: journey-invalid-run lacks the actual run-ID error message")
+                if "run!" not in run_text:
+                    errors.append(f"{entry['id']}: journey-invalid-run did not use a malformed run ID")
+                if "outbound bmap" in run_text:
+                    errors.append(f"{entry['id']}: invalid run ID emitted radio traffic")
+        scenario_text = ""
+        if "journey-invalid-scenario" in names:
+            try:
+                scenario_text = names["journey-invalid-scenario"].read_text(encoding="utf-8")
+            except OSError as error:
+                errors.append(f"{entry['id']}: cannot read journey-invalid-scenario: {error}")
+            else:
+                if "Unsupported QUIETCONTROL_TEST_SCENARIO" not in scenario_text:
+                    errors.append(f"{entry['id']}: journey-invalid-scenario lacks the unsupported-scenario message")
+                if "outbound bmap" in scenario_text:
+                    errors.append(f"{entry['id']}: invalid scenario emitted radio traffic")
+        if run_text and scenario_text:
+            run_id = run_text.splitlines()[0].removeprefix("runID: ").strip()
+            scenario_id = scenario_text.splitlines()[0].removeprefix("runID: ").strip()
+            if run_id == scenario_id:
+                errors.append(f"{entry['id']}: invalid run-ID and scenario cases must use distinct run IDs")
+            if " " in scenario_id or "!" in scenario_id:
+                errors.append(f"{entry['id']}: the unknown-scenario run ID must use the valid shape")
+
+    if "audits" in spec:
+        contexts = spec["audits"]["contexts"]
+        screenshots = spec["audits"]["screenshots"]
+        for context in contexts:
+            name = f"audit-summary-{context}"
+            if name not in names:
+                errors.append(f"{entry['id']}: missing audit summary {name!r}")
+                continue
+            errors.extend(_check_audit_summary(names[name], context))
+        for context in contexts:
+            if context not in names:
+                errors.append(f"{entry['id']}: missing required screenshot {context!r}")
+                continue
+            try:
+                data = _read_exact_bytes(names[context], context)
+            except VerifyError as error:
+                errors.append(str(error))
+                continue
+            if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                errors.append(f"{entry['id']}: {context} is not a PNG screenshot")
+        for screenshot in screenshots:
+            if screenshot not in names:
+                errors.append(f"{entry['id']}: missing required screenshot {screenshot!r}")
+            else:
+                try:
+                    data = _read_exact_bytes(names[screenshot], screenshot)
+                except VerifyError as error:
+                    errors.append(str(error))
+                    continue
+                if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                    errors.append(f"{entry['id']}: {screenshot} is not a PNG screenshot")
+    if spec.get("geometry"):
+        if "audit-geometry-editor-large-text" not in names:
+            errors.append(f"{entry['id']}: missing large-editor audit geometry attachment")
+        else:
+            errors.extend(_check_geometry(names["audit-geometry-editor-large-text"]))
+    if "journeyRunIDs" in spec:
+        expected = spec["journeyRunIDs"]
+        actual = len([detail for detail in run_details if detail["id"] == entry["id"]])
+        if actual != expected:
+            errors.append(f"{entry['id']}: mapped {actual} run directories, expected {expected}")
+        journeys = sorted(name for name in names if name.startswith("journey-"))
+        if len(journeys) != 1:
+            errors.append(f"{entry['id']}: expected one journey transcript attachment, found {journeys}")
+        else:
+            try:
+                text = names[journeys[0]].read_text(encoding="utf-8")
+            except OSError as error:
+                errors.append(f"{entry['id']}: cannot read journey attachment: {error}")
+            else:
+                for detail in (d for d in run_details if d["id"] == entry["id"]):
+                    if detail["runID"] not in text:
+                        errors.append(f"{entry['id']}: journey attachment does not name run {detail['runID']}")
+    return errors
 
 
 def container_run_names(runner: CommandRunner, simulator: dict, label: str) -> set[str]:
@@ -1416,8 +2805,15 @@ def run_session_lane(
     new_runs = exported_run_names(export) - before
     lane["artifacts"] = str(export)
     lane["runDirectories"] = sorted(new_runs)
-    for entry in entries:
-        lane["errors"].extend(inspect_entry_artifacts(entry, export, manifest["synthetic"], new_runs))
+    if manifest.get("schemaVersion") == MANIFEST_SCHEMA_VERSION:
+        errors, details = map_and_inspect_lane(
+            entries, export, new_runs, manifest["synthetic"], "session"
+        )
+        lane["errors"].extend(errors)
+        lane["evidenceRuns"] = details
+    else:
+        for entry in entries:
+            lane["errors"].extend(inspect_entry_artifacts(entry, export, manifest["synthetic"], new_runs))
     return [lane]
 
 
@@ -1434,17 +2830,41 @@ def run_ui_lane(
         label = f"ui-{journey['name']}"
         before = container_run_names(runner, simulator, label)
         lane = _run_xcode_tests(runner, run_dir, simulator, xctestrun, label, [journey["id"]])
+        attachments = None
+        result_bundle = Path(lane["resultBundle"])
+        if result_bundle.is_dir():
+            try:
+                attachments = _export_attachments(runner, result_bundle, run_dir, label)
+                lane["attachmentRoot"] = str(attachments["root"])
+            except VerifyError as error:
+                lane["errors"].append(str(error))
+        invalid_only = bool(journey.get("runs")) and all(
+            spec.get("evidence") == "invalid-configuration" for spec in journey["runs"]
+        )
         try:
-            export = _export_container(runner, run_dir, simulator, label)
+            export = _export_container(
+                runner, run_dir, simulator, label, allow_empty=invalid_only
+            )
         except VerifyError as error:
             lane["errors"].append(str(error))
         else:
             new_runs = exported_run_names(export) - before
             lane["artifacts"] = str(export)
             lane["runDirectories"] = sorted(new_runs)
-            lane["errors"].extend(
-                inspect_entry_artifacts(journey, export, manifest["synthetic"], new_runs)
-            )
+            if manifest.get("schemaVersion") == MANIFEST_SCHEMA_VERSION:
+                errors, details = map_and_inspect_lane(
+                    [journey], export, new_runs, manifest["synthetic"], label
+                )
+                lane["errors"].extend(errors)
+                lane["evidenceRuns"] = details
+                if attachments is not None:
+                    lane["errors"].extend(
+                        _validate_attachments_for_entry(journey, attachments, details)
+                    )
+            else:
+                lane["errors"].extend(
+                    inspect_entry_artifacts(journey, export, manifest["synthetic"], new_runs)
+                )
         lanes.append(lane)
     return lanes
 

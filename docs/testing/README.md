@@ -44,17 +44,54 @@ Exit codes:
   zero failed, zero skipped, zero expected failures, on the run's own simulator.
   A test that is missing from the `xcresult` fails even when xcodebuild exits 0.
 - **Independent evidence:** each session run and each UI journey copies the app data
-  container before any later test installation can replace it. The runner parses
-  `test-config.json`, `transport.jsonl`, `peripheral-state.json` and
-  `LastConfirmedState.json` strictly (duplicate JSON keys are rejected). It checks
-  the synthetic identity, run ID, defaults suite, scenario order, monotonic sequence,
-  required/forbidden/ordered BMAP packets, confirmed mode/EQ snapshot values, and
-  paired devices. Rejection and unconfirmed cases must not contain a confirmed-Aware
+  container (Application Support plus `Library/Preferences`) before any later test
+  installation can replace it. The runner parses `test-config.json`,
+  `transport.jsonl`, `peripheral-state.json`, `LastConfirmedState.json`,
+  `LifecycleDiagnostics.jsonl`, `PreferenceRecovery.json` and the isolated defaults
+  plist strictly; duplicate JSON keys, non-finite numbers and unknown fields are
+  rejected. It checks the synthetic identity, run ID, defaults suite, final
+  scenario/reset, scenario order, monotonic sequence, required/forbidden/ordered
+  packets (including explicit segment headers), exact counts scoped after a write
+  anchor, and no-outbound windows. Confirmed snapshot values, Focus strength/wind,
+  firmware, active audio, paired devices and preference payloads are checked
+  independently. Rejection and unconfirmed cases must not contain a confirmed-Aware
   packet, and the unconfirmed case must show an independent GET after the write
   rather than treating the write acknowledgement as confirmation.
+- **Multiple runs:** a test may declare several required subruns (for example
+  first-run/radio-off/permission-denied or three preference-recovery subcases). Every
+  run directory created by the lane must be claimed exactly once; missing, extra,
+  ambiguous or reused folders fail. Same-ID relaunches are checked through the final
+  `test-config.json` and the complete scenario history. The two in-memory pending
+  transport tests remain the only blanket no-container exceptions. Where the test
+  source deliberately reuses one prefix for two tests, the manifest declares a
+  `sharedPrefixGroup` and identifies each directory by a unique packet token; an
+  ambiguous directory fails.
 - **Offline relaunch:** the transcript must contain the connected launch followed by
   the offline-cached relaunch, with no outbound segments or BMAP frames after the
   offline launch. A screenshot/toast alone is never accepted.
+- **Explicit file states:** snapshots are required to be valid, intentionally
+  corrupt with the exact seeded bytes, or intentionally absent. Preference recovery
+  journals must be byte-identical to the seed, or confirmed removed. Preset
+  persistence is read from the exported isolated `Library/Preferences` plist, not
+  inferred from the UI.
+- **Fault evidence:** production `LifecycleDiagnostics` RX counts are validated for
+  the fragmented/coalesced receive path separately from fake packet markers and
+  test-authored events. Nine inbound segments with headers `80`..`88` and exactly
+  six production RX `1f 06 03 2f` frames (three setup, three after release) are
+  required, so a fake emit alone cannot pass.
+- **xcresult attachments:** the runner exports the attachment manifest per UI
+  journey and associates each attachment with its actual test. The accessibility
+  journey must produce twelve unique audit contexts, twelve current screenshots,
+  wind-clear and before-audit screenshots, and the five-frame large-editor geometry.
+  Audit summaries are parsed independently: `reported == ignored + failed`, no
+  enabled issue may be ignored, only a contrast issue on an actually disabled element
+  may be ignored, and frames must be finite/possible with `before == after`.
+- **Invalid configuration:** the negative UI test has its own narrow evidence rule.
+  It must retain both `journey-invalid-run` and `journey-invalid-scenario` text
+  attachments naming the actual `QUIETCONTROL_TEST_RUN_ID` / unsupported-scenario
+  message, both error screenshots, two distinct run IDs in the respective invalid and
+  valid shapes, and no harness run directory or radio traffic. A missing container is
+  never silently a pass and this is not a generic `artifacts:false` escape.
 - **Core:** `scripts/test.sh` must report a non-zero `Executed N tests` count with
   zero failures and no skipped tests.
 - **Release exclusion (preinstall):** the unsigned Release/device build must succeed;
@@ -93,8 +130,9 @@ commands.log                 exact commands, exit codes and durations
 logs/                        xcodebuild/simctl/nm/strings logs per command
 results/*.xcresult           build test results, one per selected journey/session lane
 artifacts/enumeration.json   exact discovered test identifiers
-artifacts/ui-<journey>/      exported app container for that journey
-artifacts/session/           exported app container for the session lane
+artifacts/ui-<journey>/      exported app container plus Library/Preferences for that journey
+artifacts/session/           exported app container plus Library/Preferences for the session lane
+attachments/ui-<journey>/    xcresult attachment manifest and exported files
 DerivedData/                 build products for this run only
 ReleaseDerivedData/          unsigned Release device build (preinstall)
 ```
@@ -106,42 +144,68 @@ that source fingerprint.
 
 ## UI manifest
 
-`docs/testing/journeys.json` is the maintained list. A journey entry looks like:
+`docs/testing/journeys.json` is the maintained list (schema version 2). Every session
+test and UI journey appears exactly once, and every test declares one or more required
+runs. A journey entry looks like:
 
 ```json
 {
   "name": "modes",
-  "test": "QuietControlUITests/QuietControlUITests/testTappingAwareUsesRealControlAndConfirmsWithIndependentGet()",
-  "run": { "prefix": "aware-", "scenario": "connected", "reset": true },
-  "expect": {
-    "snapshot": { "lastMode": 1, "eq": [-1, 4, 2] },
-    "peripheral": { "connected": true, "mode": 1, "eq": [-1, 4, 2], "multipoint": true },
-    "transcript": {
-      "scenarios": ["connected"],
-      "order": [
-        "outbound:1f0305020100",
-        "inbound:1f03030101",
-        "outbound:1f030100",
-        "inbound:1f03030101"
-      ]
+  "id": "QuietControlUITests/QuietControlUITests/testTappingAwareUsesRealControlAndConfirmsWithIndependentGet()",
+  "label": "ui-modes",
+  "runs": [
+    {
+      "prefix": "aware-",
+      "scenario": "connected",
+      "reset": true,
+      "expect": {
+        "files": { "require": ["test-config.json", "transport.jsonl"] },
+        "snapshot": { "state": "present", "lastMode": 1, "eq": [-1, 4, 2] },
+        "peripheral": { "connected": true, "mode": 1 },
+        "transcript": {
+          "scenarios": ["connected"],
+          "order": ["outbound:1f0305020100", "inbound:1f03030101"],
+          "counts": [
+            { "token": "outbound:1f030100", "equals": 1, "after": "outbound:1f0305020100" }
+          ]
+        }
+      }
     }
-  }
+  ]
 }
 ```
 
-- `run.prefix` matches the UI test's run ID prefix; `run.scenario`/`run.reset` are the
-  final `test-config.json` values. `run.artifacts: false` is permitted only for the
-  two explicitly allowlisted in-memory pending-connection session tests. Other
-  tests must export independently checked evidence.
-- `expect.transcript.order` must occur in order; `required`/`forbidden` apply anywhere;
-  `noOutboundScenarios` forbids outbound bytes for a scenario;
-  `forbiddenMessages` rejects transcript event text.
+- `runs[].prefix` matches the test's run ID prefix. `scenario`/`reset` are the final
+  `test-config.json` values, including same-ID relaunches. `expectedRuns` defaults to
+  one. `artifacts: false` remains reserved for the two explicitly allowlisted
+  in-memory pending-connection tests. `evidence: "invalid-configuration"` is reserved
+  for the one negative configuration UI test and expects zero harness runs.
+- `expect.files` names evidence that must exist or must not. `snapshot.state` is
+  `present`, `corrupt` (with the exact seeded `literal`) or `absent`. `journal.state`
+  is `present` (exact literal bytes or exact fields) or `absent`. `defaults.preset`
+  reads the isolated defaults plist.
+- `expect.transcript.order` must occur in order; `required`/`forbidden` apply anywhere
+  (a trailing `*` makes a token a packet prefix); `noOutboundScenarios` forbids
+  outbound bytes for a scenario; `forbiddenMessages` rejects event text. `counts`
+  asserts exact/bounded occurrences, optionally only after an anchor. `noOutboundBetween`
+  rejects outbound traffic between two ordered anchors, optionally restricted to a
+  packet prefix. `requireEvents`/`forbidEvents` match transcript messages.
+  `segmentHeaders`/`segmentHeadersAfter` assert ordered inbound segment headers.
+- `expect.lifecycle` validates production RX records, either by `expectedTotal` or by
+  counts before/after named events.
 - `expect.snapshot` and `expect.peripheral` check the confirmed snapshot and fixture
-  state independently of the UI.
+  state independently of the UI, including firmware, active audio and preference
+  payloads.
+- `attachments` requires the accessibility audit contexts/screenshots, large-editor
+  geometry, or the narrow invalid-configuration text/screenshot proof.
+- A `sharedPrefixGroup` (plus a unique `sharedMatchToken` per test) is only for source
+  that genuinely reuses one prefix; each directory must match exactly one test or it
+  fails as ambiguous.
 
-The schema is additive. A new UI or session test must be added to the manifest (with
-its expected packets/state) before it is accepted; unrelated new keys are rejected so
-the schema stays explicit.
+The schema is strict: unknown keys, wrong types, non-finite values, duplicate test
+IDs, duplicate/reused prefixes, disabled tests and incompatible schema versions fail
+before a simulator is created. A new UI or session test must be added to the manifest
+(with its expected run set and evidence) before it is accepted.
 
 ## Coverage and physical limits
 
