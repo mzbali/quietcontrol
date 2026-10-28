@@ -1070,19 +1070,9 @@ private struct ModeEditorView: View {
             .navigationTitle(live.displayName).navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Color(uiColor: .systemGroupedBackground), for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
-            .toolbar {
-                if live.editable {
-                    ToolbarItem(placement: .confirmationAction) { Button("Save", action: save).fontWeight(.semibold).disabled(!enabled || !dirty)
-                        .foregroundStyle(QCTheme.toolbarText)
-                        .accessibilityIdentifier("mode-save-toolbar") }
-                }
-            }
             .safeAreaInset(edge: .top) {
-                // Sheet navigation bars render their actions as glass on this OS,
-                // where the accessibility audit cannot resolve the label surface
-                // and reports clipped/contrast failures even for opaque, high
-                // contrast controls. The dismiss action keeps its identifier and
-                // behaviour in an explicit top row with measurable accent text.
+                // Keep both top actions on an opaque, pinned surface. Unlike the
+                // sheet navigation bar, this row remains available while scrolling.
                 HStack {
                     Button { if !saving { dismiss() } } label: {
                         Text(live.editable ? "Cancel" : "Done")
@@ -1096,6 +1086,19 @@ private struct ModeEditorView: View {
                     .disabled(saving)
                     .accessibilityIdentifier("mode-cancel")
                     Spacer(minLength: 0)
+                    if live.editable {
+                        Button(action: save) {
+                            Text("Save").font(.body.weight(.semibold))
+                                .foregroundStyle(QCTheme.toolbarText)
+                                .padding(.horizontal, 4).padding(.vertical, 10)
+                                .frame(minHeight: 44).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!enabled || !dirty)
+                        .opacity(enabled && dirty ? 1 : 0.45)
+                        // Retain the existing identifier for the top Save action.
+                        .accessibilityIdentifier("mode-save-toolbar")
+                    }
                 }.padding(.horizontal, 20)
                     .background(Color(uiColor: .systemGroupedBackground))
             }
