@@ -36,7 +36,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_PATH = ROOT / "docs" / "testing" / "journeys.json"
 RUN_ROOT = ROOT / "build" / "Verification"
-XCODE_DEVELOPER_DIR = "/Applications/Xcode.app/Contents/Developer"
+DEFAULT_XCODE_DEVELOPER_DIR = "/Applications/Xcode.app/Contents/Developer"
 BUNDLE_ID = "uk.co.mzbali.quietcontrol"
 MIN_FREE_DISK_BYTES = 15 * 1024 * 1024 * 1024
 
@@ -55,6 +55,13 @@ EXIT_FAIL = 1
 EXIT_USAGE = 2
 EXIT_BLOCKED = 3
 EXIT_INTERRUPTED = 130
+
+# These two app-hosted tests use in-memory pending transports and remove their
+# temporary storage in teardown. Every other test must export independent evidence.
+NO_ARTIFACT_TESTS = frozenset({
+    "QuietControlTests/QuietControlSessionTests/testRadioLossCancelsPendingSetupAndAllowsAnotherConnectionAttempt()",
+    "QuietControlTests/QuietControlSessionTests/testQuietWaitingClearsBusyWithoutReplacingPendingConnection()",
+})
 
 
 class VerifyError(Exception):
@@ -180,9 +187,10 @@ class CommandRunner:
         self.records: list[dict] = []
         self._sequence = 0
         self.environment = dict(os.environ)
-        self.environment["DEVELOPER_DIR"] = XCODE_DEVELOPER_DIR
+        self.developer_dir = str(Path(self.environment.get("DEVELOPER_DIR", DEFAULT_XCODE_DEVELOPER_DIR)).expanduser().resolve())
+        self.environment["DEVELOPER_DIR"] = self.developer_dir
         self.environment["PATH"] = (
-            f"{XCODE_DEVELOPER_DIR}/usr/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:"
+            f"{self.developer_dir}/usr/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:"
             + self.environment.get("PATH", "")
         )
 
@@ -401,6 +409,8 @@ def _validate_entry(entry, where: str, seen_ids: set[str]) -> None:
     require(isinstance(run.get("prefix"), str) and run["prefix"], f"{where}.run: prefix required")
     artifacts = run.get("artifacts", True)
     require(isinstance(artifacts, bool), f"{where}.run: artifacts must be a boolean")
+    require(artifacts or identifier in NO_ARTIFACT_TESTS,
+            f"{where}: no-artifact exemption is not allowed for {identifier}")
     if artifacts:
         require(isinstance(run.get("scenario"), str) and run["scenario"], f"{where}.run: scenario required")
         require(isinstance(run.get("reset"), bool), f"{where}.run: reset must be a boolean")
@@ -516,9 +526,9 @@ def check_discovered(manifest, enabled: list[str], disabled: list[str]) -> list[
         errors.append(f"manifest tests not discovered (stale manifest): {missing}")
     if unknown:
         errors.append(f"discovered tests missing from manifest (add them): {unknown}")
-    known_disabled = sorted({normalize_test_id(item) for item in disabled} & expected)
-    if known_disabled:
-        errors.append(f"manifest tests are disabled in the test plan: {known_disabled}")
+    disabled_tests = sorted({normalize_test_id(item) for item in disabled})
+    if disabled_tests:
+        errors.append(f"tests are disabled in the test plan: {disabled_tests}")
     return errors
 
 
@@ -859,6 +869,8 @@ def inspect_entry_artifacts(
     run = entry["run"]
     prefix = run["prefix"]
     if not run.get("artifacts", True):
+        if identifier not in NO_ARTIFACT_TESTS:
+            return [f"{identifier}: no-artifact exemption is not allowed"]
         base = export_root / "ApplicationSupport" / "QuietControlUITests"
         if base.is_dir():
             unexpected = [path.name for path in base.iterdir() if path.is_dir() and path.name.startswith(prefix)]
@@ -1137,9 +1149,10 @@ def fingerprint_source(runner: CommandRunner) -> dict:
 
 
 def preflight(runner: CommandRunner, manifest) -> dict:
-    developer_dir = Path(XCODE_DEVELOPER_DIR)
-    if not (developer_dir / "usr" / "bin" / "xcodebuild").is_file():
-        raise BlockedError(f"full Xcode is not installed at {XCODE_DEVELOPER_DIR}")
+    developer_dir = Path(runner.developer_dir)
+    xcodebuild = developer_dir / "usr" / "bin" / "xcodebuild"
+    if not xcodebuild.is_file() or not os.access(xcodebuild, os.X_OK):
+        raise BlockedError(f"full Xcode is not installed at {developer_dir}")
     for tool in ("git", "nm", "strings", "xcrun"):
         if shutil.which(tool) is None:
             raise BlockedError(f"required tool {tool!r} is not installed")
@@ -1257,6 +1270,11 @@ def _run_xcode_tests(
     command.extend(f"-only-testing:{identifier}" for identifier in test_ids)
     command.append("CODE_SIGNING_ALLOWED=NO")
     result = runner.run(command, label, TEST_TIMEOUT)
+    command_errors = []
+    if result.timed_out:
+        command_errors.append(f"{label}: xcodebuild timed out; see {result.log_path}")
+    if result.returncode != 0:
+        command_errors.append(f"{label}: xcodebuild failed with exit {result.returncode}; see {result.log_path}")
     if not result_path.is_dir():
         return {
             "label": label,
@@ -1267,7 +1285,7 @@ def _run_xcode_tests(
             "resultBundle": str(result_path),
             "counts": {},
             "tests": [],
-            "errors": [f"{label}: no xcresult produced (exit {result.returncode}); see {result.log_path}"],
+            "errors": command_errors + [f"{label}: no xcresult produced (exit {result.returncode}); see {result.log_path}"],
         }
     try:
         summary, summary_result = runner.json_command(
@@ -1290,7 +1308,7 @@ def _run_xcode_tests(
             "resultBundle": str(result_path),
             "counts": {},
             "tests": [],
-            "errors": [f"{label}: cannot parse xcresult: {error}"],
+            "errors": command_errors + [f"{label}: cannot parse xcresult: {error}"],
         }
     return {
         "label": label,
@@ -1303,7 +1321,7 @@ def _run_xcode_tests(
         "resultBundle": str(result_path),
         "counts": counts,
         "tests": leaves,
-        "errors": errors,
+        "errors": command_errors + errors,
     }
 
 
@@ -1635,7 +1653,7 @@ def main(argv=None) -> int:
         summary["source"] = fingerprint_source(runner)
         environment = preflight(runner, manifest)
         summary["environment"] = {
-            "developerDir": XCODE_DEVELOPER_DIR,
+            "developerDir": runner.developer_dir,
             "xcodeVersion": environment["xcodeVersion"],
             "xcodeBuild": environment["xcodeBuild"],
             "macOS": environment["macOS"],

@@ -123,16 +123,16 @@ that source fingerprint.
         "inbound:1f03030101",
         "outbound:1f030100",
         "inbound:1f03030101"
-      ],
-      "forbidden": ["inbound:1f03030101"]
+      ]
     }
   }
 }
 ```
 
 - `run.prefix` matches the UI test's run ID prefix; `run.scenario`/`run.reset` are the
-  final `test-config.json` values. `run.artifacts: false` is for tests that do not
-  write app-container evidence (for example pending-connection tests).
+  final `test-config.json` values. `run.artifacts: false` is permitted only for the
+  two explicitly allowlisted in-memory pending-connection session tests. Other
+  tests must export independently checked evidence.
 - `expect.transcript.order` must occur in order; `required`/`forbidden` apply anywhere;
   `noOutboundScenarios` forbids outbound bytes for a scenario;
   `forbiddenMessages` rejects transcript event text.
