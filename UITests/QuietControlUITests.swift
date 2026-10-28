@@ -2,9 +2,11 @@ import XCTest
 
 final class QuietControlUITests: XCTestCase {
     private let quietValue = "Selected"
+    private var auditFailures: [String] = []
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+        auditFailures = []
     }
 
     private func launch(runID: String, scenario: String, reset: Bool,
@@ -15,7 +17,13 @@ final class QuietControlUITests: XCTestCase {
         app.launchEnvironment["QUIETCONTROL_TEST_RUN_ID"] = runID
         if reset { app.launchEnvironment["QUIETCONTROL_TEST_RESET"] = "1" }
         if let appearance { app.launchEnvironment["QUIETCONTROL_TEST_APPEARANCE"] = appearance }
-        if largeText { app.launchEnvironment["QUIETCONTROL_TEST_LARGE_TEXT"] = "1" }
+        if largeText {
+            app.launchEnvironment["QUIETCONTROL_TEST_LARGE_TEXT"] = "1"
+            // SwiftUI reads the process-wide content size category for layout
+            // decisions in the root view; the environment override alone only
+            // reaches descendants. accessibility3 == AccessibilityXL.
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"]
+        }
         app.launch()
         return app
     }
@@ -178,32 +186,125 @@ final class QuietControlUITests: XCTestCase {
         }
     }
 
-    private func performAudit(_ app: XCUIApplication, context: String) {
+    private struct AuditRecord {
+        let context: String
+        let type: String
+        let details: String
+        let identifier: String
+        let label: String
+        let enabled: Bool?
+        let frame: CGRect?
+        let ignored: Bool
+
+        var summary: String {
+            "\(context) [\(type)] \(details) | enabled=\(enabled.map { String($0) } ?? "unknown") identifier=\(identifier) label=\(label)"
+        }
+
+        var json: [String: Any] {
+            var value: [String: Any] = [
+                "auditType": type,
+                "description": details,
+                "identifier": identifier,
+                "label": label,
+                "enabled": enabled.map { $0 as Any } ?? NSNull(),
+                "ignored": ignored,
+                "exemption": ignored ? "WCAG inactive control: contrast issue on a disabled element" : NSNull()
+            ]
+            if let frame {
+                value["frame"] = ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height]
+            }
+            return value
+        }
+    }
+
+    private func auditTypeName(_ type: XCUIAccessibilityAuditType) -> String {
+        switch type {
+        case .contrast: return "contrast"
+        case .hitRegion: return "hitRegion"
+        case .sufficientElementDescription: return "sufficientElementDescription"
+        case .textClipped: return "textClipped"
+        default: return "raw-\(type.rawValue)"
+        }
+    }
+
+    /// Audits one screen with a single inspectable policy: a contrast issue is
+    /// ignored only when its actual element is disabled (the WCAG inactive-control
+    /// exemption). There is no text-substring or screen-coordinate exemption. Every
+    /// reported issue is retained as an attachment and in a machine-readable
+    /// per-screen summary; any other issue is recorded as a failure.
+    @discardableResult
+    private func performAudit(_ app: XCUIApplication, context: String) -> [AuditRecord] {
+        var records: [AuditRecord] = []
         do {
             try app.performAccessibilityAudit(for: [.hitRegion, .sufficientElementDescription, .textClipped, .contrast]) { issue in
-                let attachment = XCTAttachment(string: "\(context): \(issue.auditType) \(issue.compactDescription) element=\(String(describing: issue.element))")
-                attachment.name = "audit-\(context)"
-                attachment.lifetime = .keepAlways
-                self.add(attachment)
-                // Apple reports a narrow "Contrast nearly passed" advisory for the
-                // intentional muted caption palette on tinted cards. Genuine contrast
-                // failures still fail the audit; only the near-miss advisory is retained
-                // as evidence rather than treated as a defect.
-                if issue.auditType == .contrast && issue.compactDescription.contains("nearly passed") {
-                    return true
-                }
-                // Navigation-bar and toolbar buttons are rendered over a system
-                // material whose sampled colour is not exposed to the audit; the same
-                // accent/primary labels pass everywhere else. Only that narrow chrome
-                // class (a button in the top 90 pt) is retained as evidence.
-                if issue.auditType == .contrast, let element = issue.element {
-                    if element.frame.minY < 90 || !element.isEnabled { return true }
-                }
-                return false
+                let element = issue.element
+                let ignored = issue.auditType == .contrast && element != nil && element?.isEnabled == false
+                let record = AuditRecord(
+                    context: context,
+                    type: self.auditTypeName(issue.auditType),
+                    details: issue.compactDescription,
+                    identifier: element?.identifier ?? "",
+                    label: element?.label ?? "",
+                    enabled: element?.isEnabled,
+                    frame: element?.frame,
+                    ignored: ignored
+                )
+                records.append(record)
+                return true
             }
         } catch {
-            XCTFail("Accessibility audit failed on \(context): \(error)")
+            records.append(AuditRecord(context: context, type: "auditError", details: "\(error)",
+                                       identifier: "", label: "", enabled: nil, frame: nil, ignored: false))
         }
+
+        for record in records {
+            let attachment = XCTAttachment(string: record.summary)
+            attachment.name = "audit-\(context)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        let ignored = records.filter(\.ignored).count
+        let failed = records.filter { !$0.ignored }
+        let summary: [String: Any] = [
+            "screen": context,
+            "auditTypes": ["hitRegion", "sufficientElementDescription", "textClipped", "contrast"],
+            "counts": [
+                "reported": records.count,
+                "accepted": records.count - ignored - failed.count,
+                "ignored": ignored,
+                "failed": failed.count
+            ],
+            "countsNote": "accepted = issues resolved by the policy without an exemption; ignored = disabled-element contrast exemptions; failed = every other reported issue (must be 0).",
+            "policy": [
+                "substringExemptions": false,
+                "coordinateExemptions": false,
+                "enabledIssueSuppression": 0,
+                "onlyExemption": "contrast issue whose actual element is disabled",
+                "measuredRatio": "not exposed by XCUIAccessibilityAuditType; resolved colours are not available from the public audit API"
+            ],
+            "issues": records.map(\.json)
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys]),
+           let text = String(data: data, encoding: .utf8) {
+            let attachment = XCTAttachment(string: text)
+            attachment.name = "audit-summary-\(context)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        auditFailures.append(contentsOf: failed.map { "\($0.context): \($0.type) \($0.label) \($0.identifier)" })
+        return records
+    }
+
+    private func assertAuditsClean() {
+        XCTAssertTrue(auditFailures.isEmpty,
+                      "Enabled accessibility issues must fail the audit: \(auditFailures.joined(separator: "; "))")
+    }
+
+    private func attachScreenshot(_ app: XCUIApplication, name: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
     }
 
     func testTappingAwareUsesRealControlAndConfirmsWithIndependentGet() {
@@ -341,6 +442,7 @@ final class QuietControlUITests: XCTestCase {
         XCTAssertEqual(element("eq-value-0", in: app).label, "-1")
         XCTAssertEqual(element("eq-value-1", in: app).label, "+4", "Confirmed Mid stays +4")
         XCTAssertEqual(element("eq-value-2", in: app).label, "+2")
+        attachScreenshot(app, name: "eq-failure-rejected")
 
         leaveEqualizer(app)
         let log = attachTranscript(app, runID: runID, note: "Rejected EQ write keeps confirmed values")
@@ -750,21 +852,20 @@ final class QuietControlUITests: XCTestCase {
     }
 
     func testAccessibilityAndLargeTextNavigation() {
-        // Light appearance: Home, Equalizer, editor and Settings with live values.
+        // Every configuration audits and screenshots the same four screens:
+        // Home, Equalizer, Focus editor and Headphone Settings.
         let lightRun = "access-light-\(UUID().uuidString)"
         let light = launch(runID: lightRun, scenario: "connected", reset: true)
         XCTAssertTrue(waitForValue(light.buttons["mode-0"], quietValue))
         performAudit(light, context: "home-light")
-        let homeShot = XCTAttachment(screenshot: light.screenshot())
-        homeShot.name = "home-light"
-        homeShot.lifetime = .keepAlways
-        add(homeShot)
+        attachScreenshot(light, name: "home-light")
 
         openEqualizer(light)
         XCTAssertEqual(element("eq-point-0", in: light).value as? String, "-1")
         XCTAssertEqual(element("eq-point-1", in: light).value as? String, "4")
         XCTAssertEqual(element("eq-point-2", in: light).value as? String, "2")
         performAudit(light, context: "equalizer-light")
+        attachScreenshot(light, name: "equalizer-light")
         leaveEqualizer(light)
 
         openEditor(light, mode: "mode-2", title: "Focus")
@@ -772,12 +873,14 @@ final class QuietControlUITests: XCTestCase {
                        "The adjustable strength exposes its value")
         XCTAssertTrue(element("mode-save-bottom", in: light).exists, "The bottom Save control is reachable")
         performAudit(light, context: "editor-light")
+        attachScreenshot(light, name: "editor-light")
         light.buttons["mode-cancel"].tap()
 
         openSettings(light)
         XCTAssertTrue(waitForLabel(element("auto-off-value", in: light), "Never", timeout: 15))
         XCTAssertTrue(appSwitch("remember-mode", in: light).exists)
         performAudit(light, context: "settings-light")
+        attachScreenshot(light, name: "settings-light")
         light.buttons["More"].tap()
         XCTAssertTrue(light.buttons["Diagnostics"].waitForExistence(timeout: 5), "The diagnostics menu is reachable")
         XCTAssertTrue(light.buttons["Connection details"].exists)
@@ -785,21 +888,33 @@ final class QuietControlUITests: XCTestCase {
         XCTAssertTrue(light.navigationBars["Connection"].waitForExistence(timeout: 10))
         light.navigationBars["Connection"].buttons["Done"].tap()
         XCTAssertTrue(light.navigationBars["Settings"].waitForExistence(timeout: 10))
-        light.buttons["Done"].tap()
+        light.buttons["settings-done"].tap()
         light.terminate()
 
-        // Dark appearance.
+        // Dark appearance: the same four screens.
         let darkRun = "access-dark-\(UUID().uuidString)"
         let dark = launch(runID: darkRun, scenario: "connected", reset: true, appearance: "dark")
         XCTAssertTrue(waitForValue(dark.buttons["mode-0"], quietValue))
         performAudit(dark, context: "home-dark")
-        let darkShot = XCTAttachment(screenshot: dark.screenshot())
-        darkShot.name = "home-dark"
-        darkShot.lifetime = .keepAlways
-        add(darkShot)
+        attachScreenshot(dark, name: "home-dark")
+
+        openEqualizer(dark)
+        XCTAssertEqual(element("eq-point-1", in: dark).value as? String, "4")
+        performAudit(dark, context: "equalizer-dark")
+        attachScreenshot(dark, name: "equalizer-dark")
+        leaveEqualizer(dark)
+
+        openEditor(dark, mode: "mode-2", title: "Focus")
+        XCTAssertEqual(element("mode-strength", in: dark).value as? String, "5 of 10")
+        performAudit(dark, context: "editor-dark")
+        attachScreenshot(dark, name: "editor-dark")
+        dark.buttons["mode-cancel"].tap()
+
         openSettings(dark)
+        XCTAssertTrue(waitForLabel(element("auto-off-value", in: dark), "Never", timeout: 15))
         performAudit(dark, context: "settings-dark")
-        dark.buttons["Done"].tap()
+        attachScreenshot(dark, name: "settings-dark")
+        dark.buttons["settings-done"].tap()
         dark.terminate()
 
         // Large text: stacked modes, navigable power settings and bottom editor controls.
@@ -807,35 +922,63 @@ final class QuietControlUITests: XCTestCase {
         let large = launch(runID: largeRun, scenario: "connected", reset: true, largeText: true)
         XCTAssertTrue(waitForValue(large.buttons["mode-0"], quietValue))
         performAudit(large, context: "home-large-text")
-        let largeShot = XCTAttachment(screenshot: large.screenshot())
-        largeShot.name = "home-large-text"
-        largeShot.lifetime = .keepAlways
-        add(largeShot)
+        attachScreenshot(large, name: "home-large-text")
+        let largeTitle = element("headphone-title", in: large)
+        XCTAssertTrue(largeTitle.waitForExistence(timeout: 10), "The header title is exposed")
+        XCTAssertEqual(largeTitle.label, "Bose QuietComfort")
+        XCTAssertGreaterThanOrEqual(largeTitle.frame.width, 220,
+                                    "QuietComfort keeps its whole word instead of hyphenating at large text")
+        XCTAssertLessThan(largeTitle.frame.height, 104,
+                          "The title stays within two clean word-wrapped lines")
+        let largeStatus = element("connection-status", in: large)
+        XCTAssertTrue(largeStatus.waitForExistence(timeout: 10))
+        XCTAssertEqual(largeStatus.label, "Connected")
+        XCTAssertGreaterThanOrEqual(largeStatus.frame.width, 100,
+                                    "Connection status keeps usable width at accessibility sizes")
+        XCTAssertLessThan(largeStatus.frame.height, 52,
+                          "Connection status stays on one line at accessibility sizes")
+        XCTAssertTrue(large.buttons["Headphone settings"].exists, "The gear stays reachable at large text")
+
+        openEditor(large, mode: "mode-2", title: "Focus")
+        XCTAssertEqual(element("mode-strength", in: large).value as? String, "5 of 10")
+        XCTAssertTrue(element("mode-save-bottom", in: large).exists)
+        // At accessibility sizes the pinned bottom action covers the initial
+        // bottom edge of the scroll content. Scroll the remaining rows into the
+        // clear before auditing so no label is sampled through the action chrome.
+        large.swipeUp()
+        performAudit(large, context: "editor-large-text")
+        attachScreenshot(large, name: "editor-large-text")
+        large.buttons["mode-cancel"].tap()
+
+        openEqualizer(large)
+        XCTAssertEqual(element("eq-point-0", in: large).value as? String, "-1")
+        performAudit(large, context: "equalizer-large-text")
+        attachScreenshot(large, name: "equalizer-large-text")
+        leaveEqualizer(large)
+
         openSettings(large)
-        let autoOffRow = large.buttons["Auto-Off"]
+        performAudit(large, context: "settings-large-text")
+        attachScreenshot(large, name: "settings-large-text")
+        let autoOffRow = large.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Auto-Off")).firstMatch
         reveal(autoOffRow, in: large)
-        if autoOffRow.exists {
-            autoOffRow.tap()
-        } else {
-            let autoOffText = large.staticTexts["Auto-Off"]
-            XCTAssertTrue(autoOffText.waitForExistence(timeout: 10), "Large text exposes Auto-Off as a navigable row")
-            autoOffText.tap()
-        }
+        XCTAssertTrue(autoOffRow.waitForExistence(timeout: 10), "Large text exposes Auto-Off as a navigable row")
+        autoOffRow.tap()
         XCTAssertTrue(element("auto-off-20", in: large).waitForExistence(timeout: 10))
         large.terminate()
-        let largeEditor = launch(runID: largeRun, scenario: "connected", reset: false, largeText: true)
-        XCTAssertTrue(waitForValue(largeEditor.buttons["mode-0"], quietValue))
-        openEditor(largeEditor, mode: "mode-2", title: "Focus")
-        XCTAssertEqual(element("mode-strength", in: largeEditor).value as? String, "5 of 10")
-        XCTAssertTrue(element("mode-save-bottom", in: largeEditor).exists)
-        performAudit(largeEditor, context: "editor-large-text")
-        largeEditor.buttons["mode-cancel"].tap()
 
-        let summary = "light runID: \(lightRun)\ndark runID: \(darkRun)\nlarge-text runID: \(largeRun)\nAudited Home, Equalizer, editor and Settings with light, dark and accessibility text sizes."
+        let summary = """
+        light runID: \(lightRun)
+        dark runID: \(darkRun)
+        large-text runID: \(largeRun)
+        Audited and screenshotted Home, Equalizer, Focus editor and Settings in each of light, dark and accessibility text sizes.
+        Audit policy: contrast issues are ignored only when the actual element is disabled; no substring or coordinate exemptions.
+        Enabled issues: \(auditFailures.isEmpty ? "none" : auditFailures.joined(separator: "; "))
+        """
         let attachment = XCTAttachment(string: summary)
         attachment.name = "journey-access-\(largeRun)"
         attachment.lifetime = .keepAlways
         add(attachment)
+        assertAuditsClean()
     }
 
     private func appSwitch(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
