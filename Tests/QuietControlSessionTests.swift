@@ -70,8 +70,10 @@ final class QuietControlSessionTests: XCTestCase {
         XCTAssertEqual(transport.closeCount, 0)
     }
 
-    private func makeSession(scenario: QCTestScenario, runID: String, reset: Bool = true) throws -> QuietComfortSession {
+    private func makeSession(scenario: QCTestScenario, runID: String, reset: Bool = true,
+                             prepare: (QCSessionEnvironment) throws -> Void = { _ in }) throws -> QuietComfortSession {
         let environment = try QCSessionEnvironment.testEnvironment(scenario: scenario, runID: runID, reset: reset)
+        try prepare(environment)
         return QuietComfortSession(environment: environment)
     }
 
@@ -399,6 +401,437 @@ final class QuietControlSessionTests: XCTestCase {
                        "Resume must not duplicate the pending connection")
         XCTAssertTrue(relaunched.isWorking)
         relaunched.disconnect()
+    }
+
+    // MARK: - Wave 3: bounded byte-path faults and recovery
+
+    private func seedPreferenceJournal(_ environment: QCSessionEnvironment,
+                                      peripheral: UUID = QCTestHarness.peripheralID,
+                                      firmware: String = "1.0.6-80+f5f219b",
+                                      name: String = "rememberMode",
+                                      payload: String = "AQ==") throws -> URL {
+        let url = environment.reportsDirectory.appendingPathComponent("PreferenceRecovery.json")
+        let json = "{\"peripheral\":\"\(peripheral.uuidString)\",\"firmware\":\"\(firmware)\",\"name\":\"\(name)\",\"payload\":\"\(payload)\"}"
+        try Data(json.utf8).write(to: url, options: .atomic)
+        return url
+    }
+
+    private func savedSnapshot(_ environment: QCSessionEnvironment) -> ConfirmedSnapshot? {
+        ConfirmedSnapshotStore(fileURL: environment.snapshotURL).load(for: QCTestHarness.peripheralID)
+    }
+
+    private func fakePeripheralState(_ environment: QCSessionEnvironment) throws -> [String: Any] {
+        let url = environment.reportsDirectory.appendingPathComponent("peripheral-state.json")
+        let data = try Data(contentsOf: url)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func occurrencesIn(_ text: String, _ needle: String) -> Int {
+        text.components(separatedBy: needle).count - 1
+    }
+
+    func testTimeoutInvalidatesCommandWithoutPersistingUnconfirmedMode() async throws {
+        let runID = "fault-timeout-\(UUID().uuidString)"
+        let session = try makeSession(scenario: .connected, runID: runID)
+        let simulator = try XCTUnwrap(session.testSimulator)
+        defer { session.disconnect() }
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+        XCTAssertEqual(session.mode, 0)
+        let baseline = try XCTUnwrap(savedSnapshot(session.environment))
+        XCTAssertEqual(baseline.lastMode, 0)
+        XCTAssertEqual(baseline.eq.map(\.value), [-1, 4, 2])
+
+        // The SET is acknowledged asynchronously; its independent GET never answers.
+        simulator.faults.arm(.processingAcknowledgement, block: 31, function: 3, operation: .start)
+        simulator.faults.arm(.withholdReply, block: 31, function: 3, operation: .get)
+        let started = Date()
+        await session.selectMode(1)
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertGreaterThanOrEqual(elapsed, 2.9, "The real 3 s production timeout must finish the operation")
+
+        XCTAssertFalse(session.isConnected, "A timed-out operation must invalidate the link, not keep it usable")
+        XCTAssertEqual(session.mode, 0, "An acknowledgement alone must not advance the confirmed mode")
+        let failure = try XCTUnwrap(session.failure)
+        XCTAssertTrue(failure.contains("did not answer BMAP [31.3]"), "Timeout failure: \(failure)")
+        XCTAssertEqual(session.toast?.isError, true)
+        XCTAssertNotEqual(session.toast?.text, "Aware selected")
+        XCTAssertFalse(session.isWorking)
+        XCTAssertFalse(session.isUserCommandPending)
+        session.recordTestEvent("Timeout inspected before any fresh handshake: connected=\(session.isConnected) mode=\(String(describing: session.mode)) eq=\(session.eq.map(\.value)) toast=\(session.toast?.text ?? "none")")
+
+        // Keep the radio unavailable so no reconnect can hide the failed/offline state.
+        simulator.setRadioStateForTesting(.poweredOff)
+        let offline = await waitUntil { session.connectionState == .bluetoothOff }
+        XCTAssertTrue(offline, "The failed link must settle in an explicit offline state")
+        XCTAssertFalse(session.isConnected)
+
+        let transcript = try XCTUnwrap(session.testTranscript)
+        XCTAssertTrue(transcript.contains("outbound bmap 1f0305020100"))
+        XCTAssertTrue(transcript.contains("inbound bmap 1f030700"), "Only PROCESSING acknowledged the SET")
+        XCTAssertFalse(transcript.contains("inbound bmap 1f03030101"), "No confirmation without the matching GET reply")
+        XCTAssertTrue(transcript.contains("Withheld simulated reply"))
+        XCTAssertFalse(transcript.contains("Protocol overlap"))
+
+        let retained = try XCTUnwrap(savedSnapshot(session.environment))
+        XCTAssertEqual(retained.lastMode, 0, "The last confirmed snapshot must not advance")
+        XCTAssertEqual(retained.eq.map(\.value), [-1, 4, 2])
+    }
+
+    func testUnrelatedNotificationsCannotCompletePendingModeRead() async throws {
+        let runID = "fault-unrelated-\(UUID().uuidString)"
+        let session = try makeSession(scenario: .connected, runID: runID)
+        let simulator = try XCTUnwrap(session.testSimulator)
+        defer { session.disconnect() }
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+        XCTAssertEqual(session.mode, 0)
+
+        simulator.faults.arm(.processingAcknowledgement, block: 31, function: 3, operation: .start)
+        simulator.faults.arm(.holdReply, block: 31, function: 3, operation: .get)
+        let action = Task { await session.selectMode(1) }
+        let held = await waitUntil { simulator.heldReplyCount == 1 }
+        XCTAssertTrue(held, "The independent mode GET reply must be held")
+        XCTAssertTrue(session.isWorking)
+        XCTAssertTrue(session.isUserCommandPending)
+        XCTAssertEqual(session.mode, 0)
+        XCTAssertNil(session.toast)
+        XCTAssertNil(session.failure)
+
+        simulator.injectNotification(try BMAPFrame(block: 2, function: 2, operation: .status, payload: Data([77])))
+        simulator.injectNotification(try BMAPFrame(block: 1, function: 7, operation: .status,
+            payload: Data([0xf6, 10, 0xff, 0, 0xf6, 10, 4, 1, 0xf6, 10, 2, 2])))
+        simulator.injectNotification(try BMAPFrame(block: 1, function: 10, operation: .status, payload: Data([1])))
+        _ = await waitUntil { session.battery == 77 }
+        XCTAssertEqual(session.mode, 0, "Unrelated notifications must not complete the pending mode action")
+        XCTAssertTrue(session.isWorking)
+        XCTAssertTrue(session.isUserCommandPending)
+        XCTAssertNil(session.toast)
+        XCTAssertEqual(session.battery, 77, "A legitimate unrelated battery update may still apply")
+
+        simulator.releaseHeldReply()
+        await action.value
+        XCTAssertEqual(session.mode, 1)
+        XCTAssertNil(session.failure)
+        XCTAssertEqual(session.toast?.text, "Aware selected")
+        XCTAssertFalse(session.toast?.isError ?? true)
+
+        let transcript = try XCTUnwrap(session.testTranscript)
+        let setRange = try XCTUnwrap(transcript.range(of: "outbound bmap 1f0305020100"))
+        let ackRange = try XCTUnwrap(transcript.range(of: "inbound bmap 1f030700", range: setRange.upperBound..<transcript.endIndex))
+        let getRange = try XCTUnwrap(transcript.range(of: "outbound bmap 1f030100", range: ackRange.upperBound..<transcript.endIndex))
+        let injectedRange = try XCTUnwrap(transcript.range(of: "inbound bmap 010a030101", range: getRange.upperBound..<transcript.endIndex))
+        let replyRange = try XCTUnwrap(transcript.range(of: "inbound bmap 1f03030101", range: injectedRange.upperBound..<transcript.endIndex))
+        XCTAssertLessThan(getRange.lowerBound, injectedRange.lowerBound)
+        XCTAssertLessThan(injectedRange.lowerBound, replyRange.lowerBound,
+                          "Confirmation must arrive only after the matching reply, following unrelated traffic")
+        XCTAssertEqual(occurrencesIn(transcript, "outbound bmap 1f0305020100"), 1)
+        XCTAssertEqual(occurrencesIn(transcript, "outbound bmap 1f030100"), 2,
+                       "One setup mode GET and exactly one independent GET for this action")
+        XCTAssertFalse(transcript.contains("Protocol overlap"))
+    }
+
+    func testMalformedEnvelopeClosesLinkAndPreservesConfirmedSnapshot() async throws {
+        let runID = "fault-malformed-\(UUID().uuidString)"
+        let session = try makeSession(scenario: .connected, runID: runID)
+        let simulator = try XCTUnwrap(session.testSimulator)
+        defer { session.disconnect() }
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+        XCTAssertEqual(session.mode, 0)
+        let baseline = try XCTUnwrap(savedSnapshot(session.environment))
+
+        simulator.faults.arm(.malformedEnvelope, block: 2, function: 2, operation: .get)
+        await session.refresh()
+
+        XCTAssertFalse(session.isConnected, "A framing error must invalidate the link")
+        XCTAssertNotNil(session.failure)
+        XCTAssertEqual(session.mode, 0)
+        XCTAssertEqual(session.eq.map(\.value), [-1, 4, 2])
+        XCTAssertFalse(session.hasLiveDeviceList)
+        XCTAssertNil(session.toast, "A background read must not claim success")
+
+        let transcript = try XCTUnwrap(session.testTranscript)
+        XCTAssertTrue(transcript.contains("121f030000"), "Literal malformed envelope delivered to the real receive path")
+        XCTAssertTrue(transcript.contains("Injecting a malformed Bose envelope"))
+        XCTAssertFalse(transcript.contains("inbound bmap 1f03030101"))
+
+        let retained = try XCTUnwrap(savedSnapshot(session.environment))
+        XCTAssertEqual(retained.lastMode, baseline.lastMode)
+        XCTAssertEqual(retained.eq.map(\.value), baseline.eq.map(\.value))
+        XCTAssertEqual(retained.modes.map(\.index), baseline.modes.map(\.index))
+    }
+
+    func testFragmentedAndCoalescedModeRepliesUseRealReceivePipeline() async throws {
+        let runID = "fault-fragmented-\(UUID().uuidString)"
+        let session = try makeSession(scenario: .connected, runID: runID)
+        let simulator = try XCTUnwrap(session.testSimulator)
+        defer { session.disconnect() }
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+        XCTAssertEqual(session.modes.map(\.index), [0, 1, 2])
+        let baseline = try XCTUnwrap(savedSnapshot(session.environment))
+
+        simulator.faults.arm(.fragmentModeReply, block: 31, function: 1, operation: .start)
+        let refresh = Task { await session.refreshModes() }
+        let partial = await waitUntil { simulator.heldReplyCount == 1 }
+        XCTAssertTrue(partial, "The first segment must arrive while the remainder is held")
+        XCTAssertTrue(session.isWorking)
+        XCTAssertEqual(session.modes.map(\.index), [0, 1, 2], "Partial bytes cannot complete a profile")
+        XCTAssertEqual(try XCTUnwrap(savedSnapshot(session.environment)).modes.map(\.index),
+                       baseline.modes.map(\.index), "No partial profile may be persisted")
+
+        simulator.releaseHeldReply()
+        await refresh.value
+        XCTAssertFalse(session.isWorking)
+        XCTAssertNil(session.failure)
+        XCTAssertEqual(session.modes.map(\.index), [0, 1, 2])
+        XCTAssertEqual(Set(session.modes.map(\.index)).count, 3, "Coalesced frames must not duplicate modes")
+        let focus = try XCTUnwrap(session.modes.first { $0.index == 2 })
+        XCTAssertEqual(focus.displayName, "Focus")
+        XCTAssertEqual(focus.ancStrength, 5)
+        XCTAssertFalse(focus.windBlock)
+        XCTAssertEqual(session.modes.map(\.displayName), ["Quiet", "Aware", "Focus"])
+        XCTAssertEqual(session.mode, 0)
+
+        let transcript = try XCTUnwrap(session.testTranscript)
+        XCTAssertTrue(transcript.contains("Fragmenting coalesced mode reply into 9 segments"), "A single multi-segment reply was held")
+        XCTAssertTrue(transcript.contains("Released held reply"))
+        XCTAssertTrue(transcript.contains("inbound bmap 1f06032f"), "The real 47-byte mode configuration crossed the receive path")
+        XCTAssertEqual(try XCTUnwrap(savedSnapshot(session.environment)).modes.map(\.index), [0, 1, 2])
+    }
+
+    func testDisconnectDuringEQWriteDoesNotReportSuccess() async throws {
+        let runID = "fault-eq-disconnect-\(UUID().uuidString)"
+        let session = try makeSession(scenario: .connected, runID: runID)
+        let simulator = try XCTUnwrap(session.testSimulator)
+        defer { session.disconnect() }
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+        XCTAssertEqual(session.eq.map(\.value), [-1, 4, 2])
+        let baseline = try XCTUnwrap(savedSnapshot(session.environment))
+        XCTAssertEqual(baseline.eq.map(\.value), [-1, 4, 2])
+
+        // The device accepts the SET and its echo, then the link dies before the
+        // independent GET can confirm the write.
+        simulator.faults.arm(.disconnectAfterReply, block: 1, function: 7, operation: .setGet)
+        await session.setEQ(.mid, value: 7)
+
+        XCTAssertFalse(session.isConnected)
+        XCTAssertNotNil(session.failure)
+        XCTAssertEqual(session.toast?.isError, true)
+        XCTAssertNotEqual(session.toast?.text, "EQ saved")
+        session.recordTestEvent("EQ disconnect inspected: transient eq=\(session.eq.map(\.value)) toast=\(session.toast?.text ?? "none")")
+        simulator.setRadioStateForTesting(.poweredOff)
+        let offline = await waitUntil { session.connectionState == .bluetoothOff }
+        XCTAssertTrue(offline)
+
+        let transcript = try XCTUnwrap(session.testTranscript)
+        XCTAssertEqual(occurrencesIn(transcript, "outbound bmap 010702020701"), 1)
+        let writeRange = try XCTUnwrap(transcript.range(of: "outbound bmap 010702020701"))
+        let afterWrite = transcript[writeRange.upperBound...]
+        XCTAssertFalse(afterWrite.contains("outbound bmap 01070100"),
+                       "No independent EQ GET may run on the dead link")
+        XCTAssertTrue(transcript.contains("Closed simulated transport generation"))
+        XCTAssertFalse(transcript.contains("Protocol overlap"))
+
+        let retained = try XCTUnwrap(savedSnapshot(session.environment))
+        XCTAssertEqual(retained.eq.map(\.value), [-1, 4, 2], "The last confirmed snapshot is retained")
+        XCTAssertEqual(retained.lastMode, 0)
+        let fake = try fakePeripheralState(session.environment)
+        let fakeEQ = try XCTUnwrap(fake["eq"] as? [Int])
+        XCTAssertEqual(fakeEQ, [-1, 7, 2], "The fake device accepted the write; no rollback after physical link loss is claimed")
+    }
+
+    func testLateNotificationFromClosedGenerationCannotSatisfyNewCommand() async throws {
+        let runID = "fault-generation-\(UUID().uuidString)"
+        let session = try makeSession(scenario: .connected, runID: runID)
+        let simulator = try XCTUnwrap(session.testSimulator)
+        defer { session.disconnect() }
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected)
+        let firstGeneration = simulator.generation
+
+        simulator.faults.arm(.holdReply, block: 31, function: 3, operation: .get)
+        let oldRead = Task { await session.refresh() }
+        let queued = await waitUntil { simulator.heldReplyCount == 1 }
+        XCTAssertTrue(queued, "The old-generation reply is queued, not delivered")
+
+        session.disconnect()
+        await oldRead.value
+        let closed = await waitUntil { !session.isConnected }
+        XCTAssertTrue(closed)
+
+        session.resumeAutoConnect()
+        let reconnected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(reconnected, "A fresh connection must establish after the old generation closed")
+        XCTAssertGreaterThan(simulator.generation, firstGeneration)
+        XCTAssertEqual(session.mode, 0)
+
+        simulator.faults.arm(.processingAcknowledgement, block: 31, function: 3, operation: .start)
+        simulator.faults.arm(.holdReply, block: 31, function: 3, operation: .get)
+        let fresh = Task { await session.selectMode(1) }
+        let bothQueued = await waitUntil { simulator.heldReplyCount == 2 }
+        XCTAssertTrue(bothQueued)
+        XCTAssertTrue(session.isWorking)
+        XCTAssertNil(session.toast)
+        XCTAssertEqual(session.mode, 0)
+
+        simulator.releaseHeldReply()
+        let dropped = await waitUntil {
+            session.testTranscript?.contains("Dropped old-generation simulated reply") == true
+        }
+        XCTAssertTrue(dropped, "The transport boundary must drop the closed generation")
+        XCTAssertTrue(session.isWorking, "The old reply must not finish the new command")
+        XCTAssertEqual(session.mode, 0, "The old reply must not overwrite the new state")
+        XCTAssertNil(session.toast)
+
+        simulator.releaseHeldReply()
+        await fresh.value
+        XCTAssertEqual(session.mode, 1)
+        XCTAssertNil(session.failure)
+        XCTAssertEqual(session.toast?.text, "Aware selected")
+
+        let transcript = try XCTUnwrap(session.testTranscript)
+        let dropRange = try XCTUnwrap(transcript.range(of: "Dropped old-generation simulated reply"))
+        let matchingReply = try XCTUnwrap(transcript.range(of: "inbound bmap 1f03030101",
+            range: dropRange.upperBound..<transcript.endIndex))
+        XCTAssertLessThan(dropRange.lowerBound, matchingReply.lowerBound)
+        XCTAssertTrue(transcript.contains("Opened simulated transport generation \(firstGeneration)"))
+        XCTAssertTrue(transcript.contains("Opened simulated transport generation \(simulator.generation)"))
+    }
+
+    func testInterruptedPreferenceRestoresOriginalValueAndClearsJournal() async throws {
+        let runID = "fault-pref-restore-\(UUID().uuidString)"
+        var journalURL: URL?
+        let session = try makeSession(scenario: .preferenceRecovery, runID: runID) { environment in
+            journalURL = try seedPreferenceJournal(environment)
+        }
+        defer { session.disconnect() }
+        let connected = await waitUntil { session.isConnected && !session.isWorking }
+        XCTAssertTrue(connected, "Setup must finish restoration before reporting a live link")
+        let journal = try XCTUnwrap(journalURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: journal.path), "The journal is removed only after confirmation")
+        XCTAssertEqual(session.preferencePackets["rememberMode"], Data([1]))
+        XCTAssertEqual(session.firmware, "1.0.6-80+f5f219b")
+
+        let transcript = try XCTUnwrap(session.testTranscript)
+        let setRange = try XCTUnwrap(transcript.range(of: "outbound bmap 1f05020101"))
+        let setReply = try XCTUnwrap(transcript.range(of: "inbound bmap 1f05030101", range: setRange.upperBound..<transcript.endIndex))
+        let getRange = try XCTUnwrap(transcript.range(of: "outbound bmap 1f050100", range: setReply.upperBound..<transcript.endIndex))
+        let getReply = try XCTUnwrap(transcript.range(of: "inbound bmap 1f05030101", range: getRange.upperBound..<transcript.endIndex))
+        XCTAssertLessThan(setRange.lowerBound, getRange.lowerBound)
+        XCTAssertLessThan(getRange.lowerBound, getReply.lowerBound, "The independent GET confirms after the SETGET")
+        XCTAssertFalse(transcript.contains("outbound bmap 010302"), "No voice-prompt write during recovery")
+        XCTAssertFalse(transcript.contains("outbound bmap 010b02"))
+
+        let fake = try fakePeripheralState(session.environment)
+        let preferences = try XCTUnwrap(fake["preferences"] as? [String: String])
+        XCTAssertEqual(preferences["rememberMode"], "01")
+        let snapshot = try XCTUnwrap(savedSnapshot(session.environment))
+        XCTAssertEqual(snapshot.lastMode, 0)
+        XCTAssertEqual(snapshot.eq.map(\.value), [-1, 4, 2])
+    }
+
+    func testFailedOrMismatchedRestorationKeepsJournalAndStopsReplay() async throws {
+        // Wrong firmware: the checkpoint belongs to another build, so nothing is written.
+        let mismatchRun = "fault-pref-fw-\(UUID().uuidString)"
+        var mismatchJournal: URL?
+        let mismatch = try makeSession(scenario: .preferenceRecovery, runID: mismatchRun) { environment in
+            mismatchJournal = try seedPreferenceJournal(environment, firmware: "9.9.9-1+wrong")
+        }
+        defer { mismatch.disconnect() }
+        let mismatchFailed = await waitUntil { mismatch.failure != nil && !mismatch.isWorking }
+        XCTAssertTrue(mismatchFailed)
+        XCTAssertFalse(mismatch.isConnected)
+        XCTAssertFalse(mismatch.hasVerifiedDirectControl)
+        XCTAssertTrue(try XCTUnwrap(mismatch.failure).contains("different QC or firmware"))
+        let mismatchURL = try XCTUnwrap(mismatchJournal)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mismatchURL.path), "A mismatch retains the checkpoint")
+        let mismatchTranscript = try XCTUnwrap(mismatch.testTranscript)
+        XCTAssertFalse(mismatchTranscript.contains("outbound bmap 1f0502"), "No restoration write on mismatch")
+        XCTAssertFalse(mismatchTranscript.contains("outbound bmap 010302"), "No voice-prompt write on mismatch")
+
+        // Wrong device: same firmware, different synthetic peripheral identity.
+        let deviceRun = "fault-pref-dev-\(UUID().uuidString)"
+        var deviceJournal: URL?
+        let wrongDevice = try makeSession(scenario: .preferenceRecovery, runID: deviceRun) { environment in
+            deviceJournal = try seedPreferenceJournal(environment, peripheral: UUID())
+        }
+        defer { wrongDevice.disconnect() }
+        let deviceFailed = await waitUntil { wrongDevice.failure != nil && !wrongDevice.isWorking }
+        XCTAssertTrue(deviceFailed)
+        XCTAssertFalse(wrongDevice.isConnected)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(deviceJournal).path))
+        let deviceTranscript = try XCTUnwrap(wrongDevice.testTranscript)
+        XCTAssertFalse(deviceTranscript.contains("outbound bmap 1f0502"))
+
+        // Same firmware, device rejects the restoration: one attempt per app session.
+        let rejectedRun = "fault-pref-rejected-\(UUID().uuidString)"
+        var rejectedJournal: URL?
+        let rejected = try makeSession(scenario: .preferenceRecoveryRejected, runID: rejectedRun) { environment in
+            rejectedJournal = try seedPreferenceJournal(environment)
+        }
+        defer { rejected.disconnect() }
+        let rejectedFailed = await waitUntil { rejected.failure != nil && !rejected.isWorking }
+        XCTAssertTrue(rejectedFailed)
+        XCTAssertFalse(rejected.isConnected)
+        XCTAssertFalse(rejected.hasVerifiedDirectControl, "No control authority from the capability seed")
+        let firstFailure = try XCTUnwrap(rejected.failure)
+        XCTAssertTrue(firstFailure.contains("rejected"), "Clear device rejection: \(firstFailure)")
+        let rejectedURL = try XCTUnwrap(rejectedJournal)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rejectedURL.path), "A failed restoration retains its journal")
+        let firstTranscript = try XCTUnwrap(rejected.testTranscript)
+        XCTAssertEqual(occurrencesIn(firstTranscript, "outbound bmap 1f05020101"), 1)
+        XCTAssertFalse(firstTranscript.contains("outbound bmap 1f050100"), "No GET after the rejected SET")
+        XCTAssertFalse(firstTranscript.contains("outbound bmap 010302"), "No accidental voice-prompt write")
+
+        var secondError: Error?
+        do { try await rejected.connectRemembered() } catch { secondError = error }
+        let replay = try XCTUnwrap(secondError)
+        XCTAssertTrue(replay.localizedDescription.contains("one attempt"),
+                      "A reconnect must refuse replay: \(replay.localizedDescription)")
+        XCTAssertFalse(rejected.isConnected)
+        let secondTranscript = try XCTUnwrap(rejected.testTranscript)
+        XCTAssertEqual(occurrencesIn(secondTranscript, "outbound bmap 1f05020101"), 1,
+                       "The rejected restoration is not attempted twice in one app session")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rejectedURL.path))
+        XCTAssertFalse(secondTranscript.contains("outbound bmap 010302"))
+    }
+
+    func testCorruptOfflineSnapshotNeverGrantsControlAuthority() async throws {
+        let runID = "fault-corrupt-snapshot-\(UUID().uuidString)"
+        let corrupt = Data("{\"version\":1,\"lastMode\":0,\"modes\":[{\"index\":0".utf8)
+        let session = try makeSession(scenario: .offlineCached, runID: runID) { environment in
+            try corrupt.write(to: environment.snapshotURL, options: .atomic)
+        }
+        defer { session.disconnect() }
+        let failed = await waitUntil { session.failure != nil && !session.isWorking }
+        XCTAssertTrue(failed)
+
+        XCTAssertFalse(session.isConnected)
+        XCTAssertFalse(session.hasSavedProfile)
+        XCTAssertNil(session.mode)
+        XCTAssertTrue(session.eq.isEmpty)
+        XCTAssertTrue(session.modes.isEmpty)
+        XCTAssertNil(session.battery)
+        XCTAssertEqual(session.model, "")
+        XCTAssertEqual(session.manufacturer, "")
+        XCTAssertEqual(session.connectionState, .unavailable)
+
+        await session.selectMode(0)
+        XCTAssertNil(session.mode, "No invented mode")
+        XCTAssertNil(session.toast)
+        let transcript = try XCTUnwrap(session.testTranscript)
+        XCTAssertFalse(transcript.contains("outbound bmap 1f030502"), "A mutating action cannot emit a SET offline")
+        XCTAssertFalse(transcript.contains("inbound bmap 1f030301"), "No fabricated confirmed mode")
+        session.recordTestEvent("Corrupt snapshot outcome: connected=\(session.isConnected) mode=\(String(describing: session.mode)) battery=\(String(describing: session.battery)) model=\(session.model)")
+
+        let preserved = try Data(contentsOf: session.environment.snapshotURL)
+        XCTAssertEqual(preserved, corrupt, "The corrupt file is preserved as evidence, not replaced")
+        let fake = try fakePeripheralState(session.environment)
+        XCTAssertEqual(fake["connected"] as? Bool, false)
+        XCTAssertEqual(fake["firmware"] as? String, "1.0.6-80+f5f219b")
     }
 }
 
