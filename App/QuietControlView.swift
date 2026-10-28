@@ -1362,7 +1362,6 @@ private struct QCFeedbackOverlay: ViewModifier {
                         } else { Image(systemName: feedback.symbol).font(.caption) }
                     }.foregroundStyle(feedback.isError ? Color.red : QCTheme.accent).frame(width: 14, height: 14)
                     Text(feedback.text).font(.caption).multilineTextAlignment(.center)
-                        .accessibilityIdentifier("feedback-toast")
                     if feedback.undo != nil {
                         Button("Undo") { Task { await session.undoSwap(feedback) } }
                             .font(.caption.weight(.semibold)).foregroundStyle(QCTheme.accent)

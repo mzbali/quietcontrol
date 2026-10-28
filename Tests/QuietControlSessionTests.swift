@@ -3,6 +3,73 @@ import XCTest
 
 @MainActor
 final class QuietControlSessionTests: XCTestCase {
+    private func makePendingSession(transport: PendingConnectionTransport) throws -> QuietComfortSession {
+        let runID = "pending-\(UUID().uuidString)"
+        let suiteName = "uk.co.mzbali.quietcontrol.ui-tests.\(runID)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.set(UUID().uuidString, forKey: "quietcontrol.lastPeripheral")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(runID)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        var timing = QCSessionTiming.production
+        timing.connectingPresentationDelay = 0.05
+        let environment = QCSessionEnvironment(defaults: defaults, documentsDirectory: directory,
+            reportsDirectory: directory, snapshotURL: directory.appendingPathComponent("snapshot.json"),
+            timing: timing, transportFactory: { transport })
+        let session = QuietComfortSession(environment: environment)
+        session.startIfNeeded()
+        return session
+    }
+
+    func testRadioLossCancelsPendingSetupAndAllowsAnotherConnectionAttempt() async throws {
+        for radioState in [QCTransportRadioState.poweredOff, .unauthorized, .unsupported] {
+            let transport = PendingConnectionTransport()
+            let session = try makePendingSession(transport: transport)
+            defer { session.disconnect() }
+            let pending = await waitUntil { transport.isWaitingForConnection }
+            XCTAssertTrue(pending)
+            XCTAssertEqual(transport.connectionAttempts, 1)
+
+            transport.setRadioState(radioState)
+            let stopped = await waitUntil { !session.isWorking && !transport.isWaitingForConnection }
+            XCTAssertTrue(stopped, "Radio loss must finish pending setup, not leave its continuation suspended.")
+            XCTAssertGreaterThan(transport.closeCount, 0)
+            XCTAssertFalse(session.isConnected)
+            let expected: QCConnectionState = radioState == .poweredOff ? .bluetoothOff
+                : radioState == .unauthorized ? .permissionNeeded : .unavailable
+            XCTAssertEqual(session.connectionState, expected)
+
+            // Powered-on resumes supported radios; unsupported hardware remains unavailable.
+            if radioState != .unsupported {
+                transport.setRadioState(.poweredOn)
+                let retried = await waitUntil { transport.connectionAttempts == 2 && transport.isWaitingForConnection }
+                XCTAssertTrue(retried, "The previous setup must no longer block a fresh attempt.")
+            }
+        }
+    }
+
+    func testQuietWaitingClearsBusyWithoutReplacingPendingConnection() async throws {
+        let transport = PendingConnectionTransport()
+        let session = try makePendingSession(transport: transport)
+        defer { session.disconnect() }
+        let waiting = await waitUntil {
+            transport.isWaitingForConnection && session.connectionState == .waitingForQC
+        }
+        XCTAssertTrue(waiting)
+        XCTAssertFalse(session.isWorking)
+        XCTAssertTrue(transport.isWaitingForConnection)
+        XCTAssertEqual(transport.connectionAttempts, 1)
+        XCTAssertEqual(transport.closeCount, 0)
+        session.setForeground(false)
+        session.setForeground(true)
+        session.startIfNeeded()
+        await Task.yield()
+        XCTAssertEqual(transport.connectionAttempts, 1, "Quiet waiting must retain one pending connect.")
+        XCTAssertEqual(transport.closeCount, 0)
+    }
+
     private func makeSession(scenario: QCTestScenario, runID: String, reset: Bool = true) throws -> QuietComfortSession {
         let environment = try QCSessionEnvironment.testEnvironment(scenario: scenario, runID: runID, reset: reset)
         return QuietComfortSession(environment: environment)
@@ -137,5 +204,44 @@ final class QuietControlSessionTests: XCTestCase {
         XCTAssertFalse(transcript.contains("Protocol overlap"), "Requests must never overlap on the wire.")
         let writeRange = try XCTUnwrap(transcript.range(of: "outbound bmap 1f0305020100"))
         XCTAssertTrue(transcript[writeRange.upperBound...].contains("outbound bmap 1f030100"))
+    }
+}
+
+/// Models a radio connection that has not completed, without constructing Apple CB objects.
+@MainActor
+private final class PendingConnectionTransport: QCByteTransport {
+    weak var delegate: QCByteTransportDelegate?
+    private(set) var identifier: UUID?
+    let isConnected = false
+    private(set) var radioState: QCTransportRadioState = .poweredOn
+    let canSendWriteWithoutResponse = false
+    private(set) var connectionAttempts = 0
+    private(set) var closeCount = 0
+    private var pending: CheckedContinuation<QCTransportLink, Error>?
+    var isWaitingForConnection: Bool { pending != nil }
+
+    func prepareRadio() {}
+    func connect(rememberedID: UUID) async throws -> QCTransportLink {
+        identifier = rememberedID
+        connectionAttempts += 1
+        return try await withCheckedThrowingContinuation { pending = $0 }
+    }
+    func setRadioState(_ state: QCTransportRadioState) {
+        radioState = state
+        delegate?.transport(self, radioStateChanged: state)
+    }
+    func close() {
+        closeCount += 1
+        identifier = nil
+        let continuation = pending
+        pending = nil
+        continuation?.resume(throwing: QCSessionError.disconnected)
+    }
+    func enableNotifications(for endpoint: QCTransportEndpoint) async throws { throw QCSessionError.disconnected }
+    func disableNotifications(for endpoint: QCTransportEndpoint) {}
+    func maximumWriteLength(for endpoint: QCTransportEndpoint, withoutResponse: Bool) -> Int { 20 }
+    func write(_ segment: Data, to endpoint: QCTransportEndpoint, withoutResponse: Bool) throws {
+        XCTFail("Pending setup must not write bytes.")
+        throw QCSessionError.disconnected
     }
 }
