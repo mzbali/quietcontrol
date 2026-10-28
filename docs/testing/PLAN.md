@@ -1,6 +1,6 @@
 # QuietControl pre-install testing
 
-Status: designed 28 October 2026; implementation delegated in sequential waves.
+Status: Wave 1 integrated into the testing base on 28 October 2026; Wave 2 pending.
 Baseline: main `3e154d9`; 33 SwiftPM tests and Debug simulator build pass.
 No UI-test target exists at baseline. No phone installation is part of this phase.
 
@@ -99,7 +99,9 @@ Main model owns the design above; the delegate implements these specified seams.
 Start only from the reviewed, committed foundation. Reconcile file lists against
 actual foundation output and run the ownership checker before launch.
 
-UI slice owns QuietControlView, UI tests, and accessibility test plan. Add journeys:
+UI slice owns the view, fixture/environment/session extensions, session/UI tests,
+and Xcode test-plan wiring. Runner slice owns scripts and testing documentation;
+the exact disjoint lists live in the phase brief directory. Add journeys:
 
 | Area | Concrete assertions |
 | --- | --- |
@@ -154,6 +156,19 @@ independent assertions, deterministic teardown, and no weakened failure criteria
 Final acceptance requires the entire preinstall suite, not just Wave 1 or a subset.
 Report actual test counts, defects fixed, remaining BLOCKED coverage, and physical
 gaps. Do not claim the phone/hardware is tested by simulator evidence.
+
+### Wave 1 acceptance record
+
+PR #1 was independently reviewed at eda4c7f: 33 core and 9 session/UI tests passed,
+with simulator/unsigned Release builds and independent packet/snapshot checks.
+Review nevertheless found a medium pending-radio-connect cancellation regression
+and three low findings (quiet-wait busy presentation, duplicate toast identifier,
+unused timing seams). Repair commit 7a6632b addressed all four and added two
+session regressions. Core33 pass, native UI4 pass on the repaired app source,
+final session7 pass, and unsigned Release build passes. A new test initially
+matched startup waiting before connect; its predicate was corrected and the first
+failed xcresult retained. No production criteria were weakened. PR #1 is merged
+into testing/xcuitest-base, not main. Full phase acceptance remains outstanding.
 
 ## Delegation comparison requested by the user
 
