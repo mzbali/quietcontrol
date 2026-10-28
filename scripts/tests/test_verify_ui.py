@@ -940,7 +940,10 @@ class Schema2EvidenceTests(unittest.TestCase):
             "segmentHeadersAfter": "Released held reply",
             "segmentHeaders": ["80", "81"],
         }
-        entry["runs"][0]["expect"]["lifecycle"] = {"rxPrefix": "1f 06 03 2f", "expectedTotal": 2}
+        entry["runs"][0]["expect"]["lifecycle"] = {
+            "rxPrefix": "1f 06 03 2f", "beforeEvent": "partial", "afterEvent": "complete",
+            "expectedBefore": 0, "expectedAfter": 2,
+        }
         rows = v2_rows() + [
             transcript_row(8, "event", "event", message="Released held reply"),
             transcript_row(9, "inbound", "segment", "80 1f 06 03 2f"),
@@ -951,7 +954,7 @@ class Schema2EvidenceTests(unittest.TestCase):
             run_dir = v2_run(root, "unit-AAAA", rows, snapshot=1, state=peripheral_fixture(mode=1))
             (run_dir / "LifecycleDiagnostics.jsonl").write_text(
                 "\n".join(json.dumps({"message": message}) for message in [
-                    "RX 1f 06 03 2f 00", "RX 1f 06 03 2f 01"
+                    "partial", "RX 1f 06 03 2f 00", "RX 1f 06 03 2f 01", "complete"
                 ]) + "\n",
                 encoding="utf-8",
             )
@@ -965,6 +968,93 @@ class Schema2EvidenceTests(unittest.TestCase):
                 [entry], root, {"unit-BBBB"}, SYNTHETIC, "session"
             )
         self.assertTrue(any("post-release segment headers" in error for error in errors), errors)
+
+
+class AnchoredEvidenceTests(unittest.TestCase):
+    def lifecycle(self, messages):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "LifecycleDiagnostics.jsonl"
+            path.write_text("\n".join(json.dumps({"message": m}) for m in messages) + "\n")
+            return verify._check_lifecycle(path, {
+                "rxPrefix": "1f06032f", "beforeEvent": "partial", "afterEvent": "complete",
+                "expectedBefore": 3, "expectedAfter": 6,
+            })
+
+    def test_fragmented_rx_cannot_move_across_partial_or_completion_boundary(self):
+        rx = [f"RX 1f 06 03 2f {i:02x}" for i in range(6)]
+        self.assertEqual(self.lifecycle(rx[:3] + ["partial"] + rx[3:] + ["complete"]), [])
+        for bad in (
+            rx + ["partial", "complete"],
+            rx[:3] + ["partial", "complete"] + rx[3:],
+            rx[:3] + ["partial", "partial"] + rx[3:] + ["complete"],
+            rx[:3] + ["complete"] + rx[3:] + ["partial"],
+            rx[:3] + rx[3:4] + ["partial"] + rx[4:] + ["complete"],
+        ):
+            with self.subTest(messages=bad):
+                self.assertTrue(self.lifecycle(bad), "Moving or duplicating records must fail despite the same total RX")
+
+    def test_manifest_requires_distinct_orderable_lifecycle_boundaries(self):
+        for lifecycle in (
+            {"rxPrefix": "1f06", "expectedTotal": 6},
+            {"rxPrefix": "1f06", "beforeEvent": "same", "afterEvent": "same", "expectedBefore": 3, "expectedAfter": 6},
+            {"rxPrefix": "1f06", "beforeEvent": "partial", "afterEvent": "complete", "expectedBefore": -1, "expectedAfter": 6},
+        ):
+            manifest = v2_manifest()
+            manifest["session"]["tests"][0]["runs"][0]["expect"]["lifecycle"] = lifecycle
+            with self.subTest(lifecycle=lifecycle), self.assertRaises(verify.VerifyError):
+                verify.validate_manifest(manifest)
+
+    def test_manifest_rejects_invalid_ordered_count_windows(self):
+        for count in (
+            {"token": "outbound:1f030100", "equals": 1, "after": []},
+            {"token": "outbound:1f030100", "equals": 1, "after": ["outbound:1f0602*", 4]},
+            {"token": "outbound:1f030100", "equals": 1, "before": "outbound:*"},
+            {"token": "outbound:1f030100", "equals": 1, "after": "outbound:1f0602*", "before": False},
+        ):
+            manifest = v2_manifest()
+            manifest["session"]["tests"][0]["runs"][0]["expect"]["transcript"]["counts"] = [count]
+            with self.subTest(count=count), self.assertRaises(verify.VerifyError):
+                verify.validate_manifest(manifest)
+
+    def check_journey(self, name, tokens):
+        manifest = verify.load_manifest(Path(__file__).resolve().parents[2] / "docs/testing/journeys.json")
+        entry = next(e for e in manifest["journeys"] if e["name"] == name)
+        rows = []
+        for i, token in enumerate(tokens, 1):
+            direction, value = token.split(":", 1)
+            rows.append(transcript_row(i, direction, "event" if direction == "event" else "bmap",
+                                       "" if direction == "event" else value,
+                                       message=value if direction == "event" else None))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "transport.jsonl"
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            return verify._check_transcript_v2(path, entry["runs"][0]["expect"]["transcript"], SYNTHETIC)
+
+    def test_editor_setup_or_later_reads_cannot_replace_save_confirmation(self):
+        focus = "inbound:1f06032f02000d010100466f637573000000000000000000000000000000000000000000000000000000000000000300000000"
+        tokens = ["outbound:1f030100", "inbound:1f03030100", focus,
+                  "outbound:1f06022702", focus, "outbound:1f030100", "inbound:1f03030100",
+                  "outbound:1f010500", focus, "outbound:1f030100", focus]
+        self.assertEqual(self.check_journey("editor", tokens), [])
+        missing_get = tokens.copy()
+        missing_get[5] = "outbound:04040100"
+        self.assertTrue(self.check_journey("editor", missing_get), "Setup/later GET cannot replace action GET")
+        missing_mode = tokens.copy()
+        missing_mode[8] = "inbound:020203015a"
+        self.assertTrue(self.check_journey("editor", missing_mode), "A later reopened editor cannot replace the write read-back")
+
+    def test_preset_earlier_drag_cannot_replace_relaunch_confirmations(self):
+        changed = "inbound:0107030cf60aff00f60a0701f60a0202"
+        baseline = "inbound:0107030cf60aff00f60a0401f60a0202"
+        tokens = ["outbound:010702020701", changed, "outbound:01070100", changed,
+                  "event:eq presets loaded 1: Mine",
+                  "outbound:01070202ff00", baseline, "outbound:01070100", baseline,
+                  "outbound:010702020701", changed, "outbound:01070100", changed,
+                  "outbound:010702020202", changed, "outbound:01070100", changed]
+        self.assertEqual(self.check_journey("presets", tokens), [])
+        for index in (12, 16):
+            tokens[index] = "inbound:020203015a"
+        self.assertTrue(self.check_journey("presets", tokens), "First-launch confirmation cannot prove a relaunch write")
 
 
 class Schema2AttachmentTests(unittest.TestCase):

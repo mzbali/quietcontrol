@@ -157,6 +157,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
     func recordTestEvent(_ message: String) {
         #if DEBUG && targetEnvironment(simulator)
         environment.harness?.evidence.event(message)
+        if environment.harness != nil { log("Test event: \(message)") }
         #endif
     }
     private var lastContactAt: Date?

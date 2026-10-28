@@ -187,12 +187,18 @@ runs. A journey entry looks like:
 - `expect.transcript.order` must occur in order; `required`/`forbidden` apply anywhere
   (a trailing `*` makes a token a packet prefix); `noOutboundScenarios` forbids
   outbound bytes for a scenario; `forbiddenMessages` rejects event text. `counts`
-  asserts exact/bounded occurrences, optionally only after an anchor. `noOutboundBetween`
+  asserts exact/bounded occurrences after an anchor or an ordered list of anchors,
+  optionally ending before the next matching `before` token. `outbound:*` marks
+  the next outbound packet. These windows prevent setup or later reads from
+  satisfying the current write's confirmation. `noOutboundBetween`
   rejects outbound traffic between two ordered anchors, optionally restricted to a
   packet prefix. `requireEvents`/`forbidEvents` match transcript messages.
   `segmentHeaders`/`segmentHeadersAfter` assert ordered inbound segment headers.
-- `expect.lifecycle` validates production RX records, either by `expectedTotal` or by
-  counts before/after named events.
+- `expect.lifecycle` requires unique, ordered before/after boundaries in the same
+  log as the production RX records. Counts must match before release and after
+  completion, with no additional matching RX afterward; total-only proof is rejected.
+  Debug simulator trace markers bracket release; the actual decoded RX records
+  establish progress, independently of a test-authored success message.
 - `expect.snapshot` and `expect.peripheral` check the confirmed snapshot and fixture
   state independently of the UI, including firmware, active audio and preference
   payloads.

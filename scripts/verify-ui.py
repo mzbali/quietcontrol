@@ -50,7 +50,7 @@ UUID_RE = re.compile(
 )
 TEST_ID_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.]+/test[A-Za-z0-9_]+\(\)$")
 PACKET_TOKEN_RE = re.compile(r"^(outbound|inbound):[0-9A-Fa-f ]+$")
-EVIDENCE_TOKEN_RE = re.compile(r"^(?:(?:outbound|inbound):[0-9A-Fa-f ]+\*?|event:.+)$")
+EVIDENCE_TOKEN_RE = re.compile(r"^(?:(?:outbound|inbound):(?:[0-9A-Fa-f ]+\*?|\*)|event:.+)$")
 MANIFEST_SCHEMA_VERSION = 2
 EXIT_PASS = 0
 EXIT_FAIL = 1
@@ -365,9 +365,9 @@ TRANSCRIPT2_KEYS = {
     "segmentHeaders",
     "segmentHeadersAfter",
 }
-COUNT_KEYS = {"token", "equals", "atLeast", "atMost", "after"}
+COUNT_KEYS = {"token", "equals", "atLeast", "atMost", "after", "before"}
 BETWEEN_KEYS = {"start", "end", "prefix"}
-LIFECYCLE_KEYS = {"rxPrefix", "beforeEvent", "afterEvent", "expectedBefore", "expectedAfter", "expectedTotal"}
+LIFECYCLE_KEYS = {"rxPrefix", "beforeEvent", "afterEvent", "expectedBefore", "expectedAfter"}
 ATTACHMENT_KEYS = {"audits", "geometry", "invalidConfiguration", "journeyRunIDs"}
 AUDIT_KEYS = {"contexts", "screenshots"}
 
@@ -695,18 +695,13 @@ def _validate_run_v2(identifier: str, run, where: str, lane: str) -> None:
         lifecycle = expect["lifecycle"]
         _check_keys(lifecycle, LIFECYCLE_KEYS, f"{where}.expect.lifecycle")
         _require_string(lifecycle.get("rxPrefix"), f"{where}.expect.lifecycle.rxPrefix")
-        if "expectedTotal" in lifecycle:
-            _require_int(lifecycle["expectedTotal"], f"{where}.expect.lifecycle.expectedTotal")
-            require(set(lifecycle) == {"rxPrefix", "expectedTotal"}, f"{where}: expectedTotal stands alone")
-        else:
-            _require_string(lifecycle.get("beforeEvent"), f"{where}.expect.lifecycle.beforeEvent")
-            _require_string(lifecycle.get("afterEvent"), f"{where}.expect.lifecycle.afterEvent")
-            _require_int(lifecycle.get("expectedBefore"), f"{where}.expect.lifecycle.expectedBefore")
-            _require_int(lifecycle.get("expectedAfter"), f"{where}.expect.lifecycle.expectedAfter")
-            require(
-                lifecycle["expectedAfter"] > lifecycle["expectedBefore"],
-                f"{where}: lifecycle RX must increase after the release",
-            )
+        _require_string(lifecycle.get("beforeEvent"), f"{where}.expect.lifecycle.beforeEvent")
+        _require_string(lifecycle.get("afterEvent"), f"{where}.expect.lifecycle.afterEvent")
+        require(lifecycle["beforeEvent"] != lifecycle["afterEvent"], f"{where}: lifecycle boundaries must differ")
+        _require_int(lifecycle.get("expectedBefore"), f"{where}.expect.lifecycle.expectedBefore")
+        _require_int(lifecycle.get("expectedAfter"), f"{where}.expect.lifecycle.expectedAfter")
+        require(0 <= lifecycle["expectedBefore"] < lifecycle["expectedAfter"],
+                f"{where}: lifecycle RX must increase after the release")
 
 
 def _validate_transcript_v2(transcript, where: str) -> None:
@@ -742,10 +737,14 @@ def _validate_transcript_v2(transcript, where: str) -> None:
         if "equals" in count:
             require(bounds == ["equals"], f"{where}.counts[{index}]: equals cannot be combined with bounds")
         if "after" in count:
-            require(
-                isinstance(count["after"], str) and EVIDENCE_TOKEN_RE.fullmatch(count["after"]),
-                f"{where}.counts[{index}].after: invalid anchor",
-            )
+            anchors = [count["after"]] if isinstance(count["after"], str) else count["after"]
+            require(isinstance(anchors, list) and anchors, f"{where}.counts[{index}].after: nonempty anchors required")
+            require(all(isinstance(a, str) and EVIDENCE_TOKEN_RE.fullmatch(a) for a in anchors),
+                    f"{where}.counts[{index}].after: invalid anchor")
+        if "before" in count:
+            require("after" in count, f"{where}.counts[{index}].before requires an after anchor")
+            require(isinstance(count["before"], str) and EVIDENCE_TOKEN_RE.fullmatch(count["before"]),
+                    f"{where}.counts[{index}].before: invalid anchor")
     between = transcript.get("noOutboundBetween", [])
     require(isinstance(between, list), f"{where}.noOutboundBetween must be a list")
     for index, rule in enumerate(between):
@@ -1483,17 +1482,15 @@ def _check_lifecycle(path: Path, expected: dict) -> list[str]:
             if normalize_packet(message[3:]).lower().startswith(prefix):
                 total += 1
         return total
-    if "expectedTotal" in expected:
-        total = rx_count(messages)
-        if total != expected["expectedTotal"]:
-            return [f"{path.name}: production RX {prefix} occurs {total} times, expected {expected['expectedTotal']}"]
-        return []
-    before_index = next((i for i, m in enumerate(messages) if expected["beforeEvent"] in m), None)
-    after_index = next((i for i, m in enumerate(messages) if expected["afterEvent"] in m), None)
-    if before_index is None:
-        return [f"{path.name}: lifecycle event {expected['beforeEvent']!r} is missing"]
-    if after_index is None:
-        return [f"{path.name}: lifecycle event {expected['afterEvent']!r} is missing"]
+    boundaries = []
+    for key in ("beforeEvent", "afterEvent"):
+        indexes = [i for i, message in enumerate(messages) if message == expected[key]]
+        if len(indexes) != 1:
+            return [f"{path.name}: lifecycle boundary {expected[key]!r} must occur exactly once, found {len(indexes)}"]
+        boundaries.append(indexes[0])
+    before_index, after_index = boundaries
+    if after_index <= before_index:
+        return [f"{path.name}: lifecycle release boundaries are out of order"]
     before = rx_count(messages[: before_index + 1])
     after = rx_count(messages[: after_index + 1])
     errors = []
@@ -1501,6 +1498,8 @@ def _check_lifecycle(path: Path, expected: dict) -> list[str]:
         errors.append(f"{path.name}: production RX {prefix} before release is {before}, expected {expected['expectedBefore']}")
     if after != expected["expectedAfter"]:
         errors.append(f"{path.name}: production RX {prefix} after release is {after}, expected {expected['expectedAfter']}")
+    if rx_count(messages) != after:
+        errors.append(f"{path.name}: unexpected production RX {prefix} after completion boundary")
     return errors
 
 
@@ -1552,13 +1551,26 @@ def _check_transcript_v2(path: Path, expect: dict, synthetic: dict) -> list[str]
         if any(matches(row, token) for row in rows):
             errors.append(f"{path.name}: forbidden packet {token!r} present")
     for rule in expect.get("counts", []):
-        scope = rows
+        start = 0
         if "after" in rule:
-            anchor = next((i for i, row in enumerate(rows) if matches(row, rule["after"])), None)
+            anchors = [rule["after"]] if isinstance(rule["after"], str) else rule["after"]
+            for token in anchors:
+                anchor = next((i for i in range(start, len(rows)) if matches(rows[i], token)), None)
+                if anchor is None:
+                    errors.append(f"{path.name}: count anchor {token!r} is missing after record {start}")
+                    break
+                start = anchor + 1
+            else:
+                anchor = start
             if anchor is None:
-                errors.append(f"{path.name}: count anchor {rule['after']!r} is missing")
                 continue
-            scope = rows[anchor + 1 :]
+        end = len(rows)
+        if "before" in rule:
+            end = next((i for i in range(start, len(rows)) if matches(rows[i], rule["before"])), None)
+            if end is None:
+                errors.append(f"{path.name}: count end anchor {rule['before']!r} is missing after record {start}")
+                continue
+        scope = rows[start:end]
         actual = sum(1 for row in scope if matches(row, rule["token"]))
         if "equals" in rule and actual != rule["equals"]:
             errors.append(f"{path.name}: {rule['token']!r} occurs {actual} times, expected exactly {rule['equals']}")
