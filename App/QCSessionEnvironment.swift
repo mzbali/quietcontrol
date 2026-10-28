@@ -13,6 +13,13 @@ struct QCSessionTiming {
     var connectingPresentationDelay: TimeInterval = 8
     var deviceRefreshDelay: TimeInterval = 0.3
     var refreshPollInterval: TimeInterval = 0.02
+    /// Audio device state is read back until the QC confirms the change.
+    var deviceConfirmationInterval: TimeInterval = 0.4
+    var routeConfirmationInterval: TimeInterval = 0.35
+    /// A device that keeps paging is stopped, then the original connection is
+    /// restored with a bounded number of retries.
+    var deviceRestoreAttempts = 8
+    var deviceRestoreRetryDelay: TimeInterval = 3
 
     static let production = QCSessionTiming()
 }
@@ -123,6 +130,21 @@ enum QCTestScenario: String, CaseIterable {
     case modeRejected = "mode-rejected"
     case modeUnconfirmed = "mode-unconfirmed"
     case offlineCached = "offline-cached"
+    case eqRejected = "eq-rejected"
+    case unsupportedFirmware = "firmware-unsupported"
+    case audioUnreachable = "audio-unreachable"
+    case radioOff = "radio-off"
+    case permissionDenied = "permission-denied"
+    case pendingConnection = "pending-connection"
+    case firstRun = "first-run"
+
+    /// Synthetic firmware string the fixture reports for this scenario.
+    var firmware: String {
+        self == .unsupportedFirmware ? "1.1.9-99+deadbeef" : "1.0.6-80+f5f219b"
+    }
+
+    /// Only the first-run fixture starts without a remembered QC.
+    var hasRememberedProfile: Bool { self != .firstRun }
 }
 
 enum QCTestConfigurationError: LocalizedError {
@@ -176,6 +198,9 @@ struct QCSimulatedPeripheralState: Encodable {
     let eq: [Int]
     let multipoint: Bool
     let devices: [Device]
+    let firmware: String
+    let activeAudio: String?
+    let preferences: [String: String]
     let updatedAt: Date
 
     struct Device: Encodable {
@@ -297,7 +322,9 @@ final class QCTestHarness {
                                  optionalActionTimeout: 0.35, modeConfirmationAttempts: 5,
                                  modeConfirmationDelay: 0.05, snapshotDebounce: 0.05,
                                  modeDrainDelay: 0.1, connectingPresentationDelay: 8,
-                                 deviceRefreshDelay: 0.05, refreshPollInterval: 0.01)
+                                 deviceRefreshDelay: 0.05, refreshPollInterval: 0.01,
+                                 deviceConfirmationInterval: 0.05, routeConfirmationInterval: 0.05,
+                                 deviceRestoreAttempts: 8, deviceRestoreRetryDelay: 0.15)
 
     init(arguments: [String], environment: [String: String]) throws {
         configuration = try QCTestConfiguration(arguments: arguments, environment: environment)
@@ -314,17 +341,24 @@ final class QCTestHarness {
             defaults.removePersistentDomain(forName: configuration.defaultsSuite)
         }
         try FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
-        if defaults.string(forKey: Self.rememberedKey) == nil {
-            defaults.set(Self.peripheralID.uuidString, forKey: Self.rememberedKey)
-            defaults.set(true, forKey: "quietcontrol.autoConnect")
+        let scenario = configuration.scenario
+        if scenario.hasRememberedProfile {
+            if defaults.string(forKey: Self.rememberedKey) == nil {
+                defaults.set(Self.peripheralID.uuidString, forKey: Self.rememberedKey)
+                defaults.set(true, forKey: "quietcontrol.autoConnect")
+            }
+            // Synthetic starting capability: this fixture represents a QC already
+            // verified by an earlier session. The firmware/capability gates remain.
+            let proofKey = "quietcontrol.verified.\(Self.peripheralID.uuidString).884367-0100.\(scenario.firmware)"
+            defaults.set(true, forKey: proofKey)
+            defaults.set(true, forKey: "\(proofKey).devices.connect")
+            defaults.set(true, forKey: "\(proofKey).devices.all")
+            defaults.set(true, forKey: "\(proofKey).devices.multipoint")
+            defaults.set(true, forKey: "\(proofKey).devices.modeEditing")
+            // Voice prompts have no self-verification path; this fixture represents a
+            // QC where that single-byte write was proven in an earlier session.
+            defaults.set(true, forKey: "\(proofKey).devices.voicePrompts")
         }
-        // Synthetic starting capability: this fixture represents a QC already
-        // verified by an earlier session. The firmware/capability gates remain.
-        let proofKey = "quietcontrol.verified.\(Self.peripheralID.uuidString).884367-0100.1.0.6-80+f5f219b"
-        defaults.set(true, forKey: proofKey)
-        defaults.set(true, forKey: "\(proofKey).devices.connect")
-        defaults.set(true, forKey: "\(proofKey).devices.all")
-        defaults.set(true, forKey: "\(proofKey).devices.multipoint")
         evidence = try QCTestEvidence(filesDirectory: filesDirectory,
                                       scenario: configuration.scenario.rawValue,
                                       peripheral: Self.peripheralID.uuidString)
