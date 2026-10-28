@@ -1,0 +1,31 @@
+{
+  "configurations" : [
+    {
+      "id" : "9F4B2C1A-1111-4A2B-8C3D-000000000001",
+      "name" : "Wave 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:QuietControl.xcodeproj",
+        "identifier" : "C40000000000000000000001",
+        "name" : "QuietControlTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:QuietControl.xcodeproj",
+        "identifier" : "C40000000000000000000002",
+        "name" : "QuietControlUITests"
+      }
+    }
+  ],
+  "version" : 1
+}
