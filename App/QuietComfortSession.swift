@@ -89,6 +89,7 @@ struct DeviceVerificationReport: Encodable {
 /// user's QC. Wire framing: NerdySouth/bozo; prince commands: aaronsb/bosectl.
 @MainActor
 final class QuietComfortSession: NSObject, ObservableObject {
+    private(set) var environment: QCSessionEnvironment
     @Published private(set) var isConnected = false
     @Published private(set) var isWorking = false
     @Published private(set) var isRefreshing = false
@@ -130,7 +131,23 @@ final class QuietComfortSession: NSObject, ObservableObject {
     @Published private(set) var verifiedPreferences: Set<String> = []
     var hasKnownProfile: Bool { hasSavedProfile || isConnected }
     var autoConnectEnabled: Bool { lifecycle.wantsConnection }
-    var hasRememberedDevice: Bool { (isPreview && hasSavedProfile) || UserDefaults.standard.string(forKey: "quietcontrol.lastPeripheral") != nil }
+    var hasRememberedDevice: Bool { (isPreview && hasSavedProfile) || environment.defaults.string(forKey: "quietcontrol.lastPeripheral") != nil }
+    /// Narrow export for simulator UI tests: the fixture transcript is nil in Release.
+    var testTranscript: String? {
+        #if DEBUG && targetEnvironment(simulator)
+        return environment.harness?.evidence.transcriptText
+        #else
+        return nil
+        #endif
+    }
+    /// Literal select-mode write, independent GET and reply for UI assertions.
+    var testModeEvidence: String? {
+        #if DEBUG && targetEnvironment(simulator)
+        return environment.harness?.evidence.modeSwitchEvidence
+        #else
+        return nil
+        #endif
+    }
     private var lastContactAt: Date?
     private var isEstablishing = false
     private var isInspecting = false
@@ -148,19 +165,14 @@ final class QuietComfortSession: NSObject, ObservableObject {
     private var lifecycle = ConnectionPolicy()
     private var reconnectTask: Task<Void, Never>?
     private var isRestoring = false
-    private var central: CBCentralManager?
-    private var peripheral: CBPeripheral?
-    private var control: CBCharacteristic?
-    private var endpointCandidates: [CBCharacteristic] = []
+    private var transport: QCByteTransport?
+    private var controlEndpoint: QCTransportEndpoint?
+    private var peripheralIdentity: UUID?
     private var reassembler = BoseBLEReassembler()
     private var outgoing: [Data] = []
     private var writeInProgress = false
     private var lastSent = Date.distantPast
     private var operationID = UUID()
-    private enum Stage: Equatable { case radio, connection, services, characteristics(CBUUID), metadata(CBUUID), notify }
-    private var stage: Stage?
-    private var stageWaiter: CheckedContinuation<Void, Error>?
-    private var stageTimer: Task<Void, Never>?
     private var commandWaiter: CheckedContinuation<[BMAPFrame], Error>?
     private var commandTimer: Task<Void, Never>?
     private var drainTimer: Task<Void, Never>?
@@ -174,18 +186,34 @@ final class QuietComfortSession: NSObject, ObservableObject {
     private var needsResynchronization = false
 
     override init() {
+        environment = .production
         super.init()
+        finishInitialization()
+    }
+
+    init(environment: QCSessionEnvironment) {
+        self.environment = environment
+        super.init()
+        finishInitialization()
+    }
+
+    private func finishInitialization() {
         #if DEBUG && targetEnvironment(simulator)
         if ProcessInfo.processInfo.arguments.contains("--preview-controls") {
             loadPreview(); return
         }
         #endif
-        let enabled = UserDefaults.standard.object(forKey: "quietcontrol.autoConnect") as? Bool ?? true
+        let enabled = environment.defaults.object(forKey: "quietcontrol.autoConnect") as? Bool ?? true
         lifecycle = ConnectionPolicy(wantsConnection: enabled, hasRememberedDevice: hasRememberedDevice)
         connectionState = lifecycle.state
         restoreCachedProfile()
         log("App launched; auto-connect \(enabled ? "enabled" : "paused").")
-        if hasRememberedDevice { makeCentral() }
+        if hasRememberedDevice {
+            let transport = environment.makeTransport()
+            transport.delegate = self
+            self.transport = transport
+            transport.prepareRadio()
+        }
     }
 
     #if DEBUG && targetEnvironment(simulator)
@@ -225,13 +253,6 @@ final class QuietComfortSession: NSObject, ObservableObject {
     }
     #endif
 
-    private func makeCentral() {
-        guard central == nil else { return }
-        central = CBCentralManager(delegate: self, queue: .main, options: [
-            CBCentralManagerOptionRestoreIdentifierKey: "uk.co.mzbali.quietcontrol.central"
-        ])
-    }
-
     func setForeground(_ value: Bool) {
         guard !isPreview else { return }
         lifecycle.setForeground(value)
@@ -254,7 +275,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
 
     private func scheduleReconnect(immediate: Bool = false) {
         guard !isInspecting, lifecycle.wantsConnection, !isConnected, !isEstablishing, !isWorking,
-              reconnectTask == nil, central?.state == .poweredOn,
+              reconnectTask == nil, transport?.radioState == .poweredOn,
               connectionState != .unavailable, hasRememberedDevice,
               let delay = lifecycle.nextRetryDelay() else { return }
         reconnectTask = Task { [weak self] in
@@ -271,25 +292,25 @@ final class QuietComfortSession: NSObject, ObservableObject {
         lifecycle.resume()
         if !hasRememberedDevice { lifecycle.beginAttempt(hasRememberedDevice: false) }
         connectionState = lifecycle.state
-        UserDefaults.standard.set(true, forKey: "quietcontrol.autoConnect")
+        environment.defaults.set(true, forKey: "quietcontrol.autoConnect")
         log("Auto-connect resumed by user.")
         startIfNeeded()
     }
 
     func connectRemembered() async throws {
         lifecycle.resume(); connectionState = lifecycle.state
-        UserDefaults.standard.set(true, forKey: "quietcontrol.autoConnect")
+        environment.defaults.set(true, forKey: "quietcontrol.autoConnect")
         try await establishRemembered()
     }
 
     private func beginConnectingPresentation() {
         presentationTimer?.cancel()
         connectionState = .connecting
+        let delay = environment.timing.connectingPresentationDelay
         presentationTimer = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 8_000_000_000) } catch { return }
+            do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) } catch { return }
             guard let self, !self.isConnected, self.lifecycle.wantsConnection else { return }
             self.lifecycle.settleWaiting(); self.connectionState = self.lifecycle.state
-            if self.stage == .connection { self.isWorking = false }
             self.log("Waiting quietly; the existing CoreBluetooth connection request remains pending.")
         }
     }
@@ -315,73 +336,42 @@ final class QuietComfortSession: NSObject, ObservableObject {
             }
         }
         do {
-            guard let id = UserDefaults.standard.string(forKey: "quietcontrol.lastPeripheral").flatMap(UUID.init(uuidString:)) else {
+            guard let id = environment.defaults.string(forKey: "quietcontrol.lastPeripheral").flatMap(UUID.init(uuidString:)) else {
                 throw QCSessionError.unavailable("Run Connection inspection first and select your QC.")
             }
-            if central?.state != .poweredOn {
-                try await wait(for: .radio) {
-                    if self.central == nil { self.makeCentral() }
-                    else { self.radioChanged() }
-                }
-            }
-            try requireRun(run)
-            guard let central, let found = central.retrievePeripherals(withIdentifiers: [id]).first else {
-                throw QCSessionError.unavailable("iOS could not retrieve the remembered QC. Run Connection inspection again.")
-            }
-            peripheral = found; found.delegate = self
-            if found.state != .connected {
-                try await wait(for: .connection) {
-                    if found.state != .connecting { central.connect(found, options: nil) }
-                }
-            }
-            try requireRun(run)
+            guard let transport else { throw QCSessionError.unavailable("Bluetooth is not available.") }
             isWorking = true
             beginConnectingPresentation()
-            try await wait(for: .services) { found.discoverServices([CBUUID(string: "180A"), CBUUID(string: BoseBLEFraming.serviceUUID)]) }
+            let link = try await transport.connect(rememberedID: id)
             try requireRun(run)
-            for service in found.services ?? [] {
-                try await wait(for: .characteristics(service.uuid)) { found.discoverCharacteristics(nil, for: service) }
-                try requireRun(run)
-            }
-            guard let information = found.services?.first(where: { $0.uuid == CBUUID(string: "180A") }) else {
-                throw QCSessionError.unavailable("The QC did not expose its Device Information service.")
-            }
-            manufacturer = try await readText("2A29", in: information)
-            model = try await readText("2A24", in: information)
-            try requireRun(run)
+            peripheralIdentity = link.identifier
+            manufacturer = link.manufacturer
+            model = link.model
             guard manufacturer == "Bose Corporation", model.hasPrefix("884367-") else {
                 throw QCSessionError.unavailable("This build supports the verified QuietComfort 884367 model family. Reported: \(manufacturer), \(model).")
             }
             proof.model = model; proof.manufacturer = manufacturer
-            guard let service = found.services?.first(where: { $0.uuid == CBUUID(string: BoseBLEFraming.serviceUUID) }) else {
-                throw QCSessionError.unavailable("The documented Bose FEBE control service is unavailable.")
-            }
-            endpointCandidates = [BoseBLEFraming.secureCharacteristicUUID, BoseBLEFraming.plainCharacteristicUUID].compactMap { uuid in
-                service.characteristics?.first {
-                    $0.uuid == CBUUID(string: uuid) && $0.properties.contains(.notify)
-                    && ($0.properties.contains(.writeWithoutResponse) || $0.properties.contains(.write))
-                }
-            }
-            guard !endpointCandidates.isEmpty else { throw QCSessionError.unavailable("No documented Bose command characteristic is exposed.") }
+            guard !link.endpoints.isEmpty else { throw QCSessionError.unavailable("No documented Bose command characteristic is exposed.") }
             var transportFailure: Error = QCSessionError.unavailable("No control endpoint responded.")
             var established = false
-            for candidate in endpointCandidates {
+            for candidate in link.endpoints {
                 try requireRun(run)
-                control = candidate; reassembler.reset(); outgoing.removeAll(); needsResynchronization = false
+                controlEndpoint = candidate; reassembler.reset(); outgoing.removeAll(); needsResynchronization = false
                 do {
-                    if !candidate.isNotifying { try await wait(for: .notify) { found.setNotifyValue(true, for: candidate) } }
+                    try await transport.enableNotifications(for: candidate)
+                    try requireRun(run)
                     let response = try await request(PrinceProtocol.firmwareRequest())
                     let payload = try response[0].statusPayload(block: 0, function: 5)
                     guard let version = String(data: payload, encoding: .ascii), !version.isEmpty else { throw BMAPError.malformedPayload }
                     firmware = version.trimmingCharacters(in: .controlCharacters)
-                    proof.firmware = firmware; proof.characteristic = candidate.uuid.uuidString
-                    log("BMAP firmware reply received on \(candidate.uuid.uuidString): \(firmware)")
+                    proof.firmware = firmware; proof.characteristic = candidate.id
+                    log("BMAP firmware reply received on \(candidate.id): \(firmware)")
                     established = true; break
                 } catch {
                     try requireRun(run)
                     transportFailure = error
-                    log("Endpoint \(candidate.uuid.uuidString) did not establish BMAP: \(error.localizedDescription)")
-                    found.setNotifyValue(false, for: candidate)
+                    log("Endpoint \(candidate.id) did not establish BMAP: \(error.localizedDescription)")
+                    transport.disableNotifications(for: candidate)
                 }
             }
             guard established else { throw transportFailure }
@@ -407,16 +397,16 @@ final class QuietComfortSession: NSObject, ObservableObject {
                 let checkpoint = try JSONDecoder().decode(PreferenceRecovery.self, from: data)
                 guard checkpoint.peripheral == id, checkpoint.firmware == firmware else { throw QCSessionError.unavailable("Preference restoration belongs to a different QC or firmware.") }
                 try await writePreferenceConfirmed(checkpoint.name, payload: checkpoint.payload)
-                UserDefaults.standard.set(true, forKey: capabilityKey(checkpoint.name))
+                environment.defaults.set(true, forKey: capabilityKey(checkpoint.name))
                 try clearPreferenceRecovery()
             }
-            verifiedPreferences = Set(["voicePrompts", "selfVoice", "shortcut"].filter { UserDefaults.standard.bool(forKey: capabilityKey($0)) })
+            verifiedPreferences = Set(["voicePrompts", "selfVoice", "shortcut"].filter { environment.defaults.bool(forKey: capabilityKey($0)) })
             if powerSettingsProven { verifiedPreferences.formUnion(["autoOff", "rememberMode"]) }
             isConnected = true
             lifecycle.connected(); connectionState = lifecycle.state
             presentationTimer?.cancel(); presentationTimer = nil
             connectionTime = Date().timeIntervalSince(started)
-            hasVerifiedDirectControl = UserDefaults.standard.bool(forKey: proofKey)
+            hasVerifiedDirectControl = environment.defaults.bool(forKey: proofKey)
             message = "Connected directly. Battery, modes and EQ were read from your QC."
             log("\(message) Connection setup: \(Int((connectionTime ?? 0) * 1000)) ms.")
             do { try await readDevices() }
@@ -424,13 +414,13 @@ final class QuietComfortSession: NSObject, ObservableObject {
                 deviceListFailure = error.localizedDescription; log("Device list unavailable: \(error.localizedDescription)")
                 if needsResynchronization { throw error }
             }
-            if let checkpoint = try deviceRecoveryCheckpoint(), checkpoint.peripheral == found.identifier {
+            if let checkpoint = try deviceRecoveryCheckpoint(), checkpoint.peripheral == link.identifier {
                 guard checkpoint.firmware == firmware else { throw QCSessionError.unavailable("A device-connection recovery belongs to older firmware. Inspect DeviceRecovery.json before changing connections.") }
                 try await restoreDeviceConnections(checkpoint)
                 try clearDeviceRecovery()
                 log("Recovered the audio connections from an interrupted device-control check.")
             }
-            modeEditingVerified = UserDefaults.standard.bool(forKey: capabilityKey("modeEditing"))
+            modeEditingVerified = environment.defaults.bool(forKey: capabilityKey("modeEditing"))
             loadDeviceCapabilities()
             persistSnapshot()
             #if DEBUG
@@ -470,8 +460,8 @@ final class QuietComfortSession: NSObject, ObservableObject {
             failure = error.localizedDescription; message = "Could not establish direct control."
             proof.failure = failure; log("Connection failed: \(error.localizedDescription)")
             closeLink()
-            if central?.state == .poweredOff { lifecycle.radioUnavailable(.bluetoothOff) }
-            else if central?.state == .unauthorized { lifecycle.radioUnavailable(.permissionNeeded) }
+            if transport?.radioState == .poweredOff { lifecycle.radioUnavailable(.bluetoothOff) }
+            else if transport?.radioState == .unauthorized { lifecycle.radioUnavailable(.permissionNeeded) }
             else if case QCSessionError.unavailable = error { lifecycle.radioUnavailable(.unavailable) }
             connectionState = lifecycle.state
             restoreCachedProfile()
@@ -497,10 +487,10 @@ final class QuietComfortSession: NSObject, ObservableObject {
 
     private func capabilityKey(_ feature: String) -> String { "\(proofKey).devices.\(feature)" }
     private func loadDeviceCapabilities() {
-        deviceControlsVerified = UserDefaults.standard.bool(forKey: capabilityKey("connect"))
-        disconnectAllVerified = UserDefaults.standard.bool(forKey: capabilityKey("all"))
-        routingVerified = UserDefaults.standard.bool(forKey: capabilityKey("routing"))
-        multipointVerified = UserDefaults.standard.bool(forKey: capabilityKey("multipoint"))
+        deviceControlsVerified = environment.defaults.bool(forKey: capabilityKey("connect"))
+        disconnectAllVerified = environment.defaults.bool(forKey: capabilityKey("all"))
+        routingVerified = environment.defaults.bool(forKey: capabilityKey("routing"))
+        multipointVerified = environment.defaults.bool(forKey: capabilityKey("multipoint"))
     }
 
     private func scheduleDeviceRefresh() {
@@ -635,7 +625,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
     }
 
     func verifyDeviceControls() async {
-        guard isConnected, !isWorking, hasVerifiedDirectControl, let peripheral else { return }
+        guard isConnected, !isWorking, hasVerifiedDirectControl, peripheralIdentity != nil else { return }
         isWorking = true; isVerifying = true; failure = nil
         let run = operationID
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "QuietControl device recovery") { [weak self] in self?.closeLink() }
@@ -655,7 +645,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
         do {
             try await readDevices()
             guard let multipoint, !devices.filter(\.isConnected).isEmpty else { throw QCSessionError.unavailable("Connect iPhone audio to your QC before verifying device controls.") }
-            let baseline = DeviceRecoveryCheckpoint(peripheral: peripheral.identifier, firmware: firmware, connected: devices.filter(\.isConnected).map(\.address), source: activeAudioAddress, multipoint: multipoint)
+            let baseline = DeviceRecoveryCheckpoint(peripheral: try requirePeripheralIdentity(), firmware: firmware, connected: devices.filter(\.isConnected).map(\.address), source: activeAudioAddress, multipoint: multipoint)
             checkpoint = baseline
             try save(baseline, named: "DeviceRecovery.json")
             message = "Checking audio disconnection while keeping the control link…"
@@ -686,7 +676,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
             catch BMAPError.deviceError(4) {
                 routingExists = false
                 report.limitations.append("Direct audio-source routing is not supported by this firmware (function 4.12). Start playback on a connected device instead.")
-                UserDefaults.standard.set(true, forKey: capabilityKey("routingUnsupported"))
+                environment.defaults.set(true, forKey: capabilityKey("routingUnsupported"))
             } catch {
                 if needsResynchronization { throw error }
             }
@@ -702,9 +692,9 @@ final class QuietComfortSession: NSObject, ObservableObject {
             report.restorationConfirmed = true
             try clearDeviceRecovery()
             for (key, value) in [("connect", report.connectDisconnect), ("all", report.disconnectAll), ("routing", report.routing), ("multipoint", report.multipoint)] {
-                UserDefaults.standard.set(value, forKey: capabilityKey(key))
+                environment.defaults.set(value, forKey: capabilityKey(key))
             }
-            modeEditingVerified = UserDefaults.standard.bool(forKey: capabilityKey("modeEditing"))
+            modeEditingVerified = environment.defaults.bool(forKey: capabilityKey("modeEditing"))
             loadDeviceCapabilities()
             message = "Device control check complete. Starting connections restored."
             log(message)
@@ -767,11 +757,11 @@ final class QuietComfortSession: NSObject, ObservableObject {
     }
 
     func verifyDirectControl() async {
-        guard isConnected, !isWorking, let peripheral, let baselineMode = mode,
+        guard isConnected, !isWorking, let identity = peripheralIdentity, let baselineMode = mode,
               let bass = eq.first(where: { $0.band == .bass })?.value, battery != nil else { return }
         isWorking = true; isVerifying = true; isVerifyingModeEQ = true; failure = nil
         hasVerifiedDirectControl = false
-        UserDefaults.standard.set(false, forKey: proofKey)
+        environment.defaults.set(false, forKey: proofKey)
         let run = operationID
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "QuietControl restoration") { [weak self] in self?.closeLink() }
         defer {
@@ -788,7 +778,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
         }
         proof.initialMode = baselineMode; proof.initialEQ = eq.map(\.value)
         proof.battery = battery; proof.modesRead = true
-        let checkpoint = RecoveryCheckpoint(peripheral: peripheral.identifier, mode: baselineMode, bass: bass)
+        let checkpoint = RecoveryCheckpoint(peripheral: identity, mode: baselineMode, bass: bass)
         do {
             try save(checkpoint, named: "PendingRestoration.json")
             message = "Checking Quiet and Aware, then restoring your mode…"
@@ -805,7 +795,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
             try clearRecovery()
             proof.directControlProven = true
             hasVerifiedDirectControl = true
-            UserDefaults.standard.set(true, forKey: proofKey)
+            environment.defaults.set(true, forKey: proofKey)
             message = "Direct control check passed. Your original mode and EQ are restored."
             log(message)
         } catch {
@@ -909,7 +899,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
         await performUserCommand(notify: true) {
             try await self.readSnapshot(includeModes: true)
             guard let original = self.modes.first(where: { $0.editable && $0.index > 1 }) else { throw BMAPError.unexpectedResponse }
-            let checkpoint = ModeEditRecovery(peripheral: self.peripheral!.identifier, firmware: self.firmware, original: original)
+            let checkpoint = ModeEditRecovery(peripheral: try self.requirePeripheralIdentity(), firmware: self.firmware, original: original)
             try self.save(checkpoint, named: "ModeEditRecovery.json")
             var testError: Error?
             do {
@@ -921,7 +911,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
             try self.clearModeEditRecovery()
             if let testError { throw testError }
             self.modeEditingVerified = true
-            UserDefaults.standard.set(true, forKey: self.capabilityKey("modeEditing"))
+            environment.defaults.set(true, forKey: self.capabilityKey("modeEditing"))
             try self.save(["passed": true, "restored": true], named: "ModeEditingProof.json")
         }
     }
@@ -952,7 +942,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
                 let candidate = Data([name == "autoOff" ? (original[0] == 20 ? 40 : 20) : (original[0] == 1 ? 0 : 1)])
                 report[name + "Original"] = original.hexString
                 try self.save(["model": self.model, "firmware": self.firmware,
-                               "peripheral": self.peripheral!.identifier.uuidString,
+                               "peripheral": try self.requirePeripheralIdentity().uuidString,
                                "block": String(block), "function": String(function), "original": original.hexString], named: "PowerPreferenceRecovery.json")
                 try self.save(report, named: "PowerPreferenceProof.json")
                 var writeError: Error?
@@ -1103,14 +1093,14 @@ final class QuietComfortSession: NSObject, ObservableObject {
                 case "selfVoice": candidate[1] = original[1] == 2 ? 3 : 2
                 default: candidate[2] = original[2] == 14 ? 3 : 14
                 }
-                let recovery = PreferenceRecovery(peripheral: self.peripheral!.identifier, firmware: self.firmware, name: name, payload: original)
+                let recovery = PreferenceRecovery(peripheral: try self.requirePeripheralIdentity(), firmware: self.firmware, name: name, payload: original)
                 try self.save(recovery, named: "PreferenceRecovery.json")
                 var testError: Error?
                 do { try await self.writePreferenceConfirmed(name, payload: candidate) } catch { testError = error }
                 try await self.writePreferenceConfirmed(name, payload: original)
                 try self.clearPreferenceRecovery()
                 results[name] = testError == nil
-                if testError == nil { self.verifiedPreferences.insert(name); UserDefaults.standard.set(true, forKey: self.capabilityKey(name)) }
+                if testError == nil { self.verifiedPreferences.insert(name); environment.defaults.set(true, forKey: self.capabilityKey(name)) }
             }
             try self.save(results, named: "PreferenceProof.json")
         }
@@ -1174,7 +1164,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
 
     func disconnect() {
         lifecycle.pause(); connectionState = lifecycle.state
-        UserDefaults.standard.set(false, forKey: "quietcontrol.autoConnect")
+        environment.defaults.set(false, forKey: "quietcontrol.autoConnect")
         log("Auto-connect paused by user; pairing is unchanged.")
         cancelSetupAndLink()
         message = "Auto-connect paused."
@@ -1197,21 +1187,20 @@ final class QuietComfortSession: NSObject, ObservableObject {
         isEstablishing = false; isWorking = false; isRefreshing = false
     }
     private func closeLink() {
-        completeStage(.failure(QCSessionError.disconnected))
         completeCommand(.failure(QCSessionError.disconnected))
-        if let peripheral { peripheral.delegate = nil; central?.cancelPeripheralConnection(peripheral) }
-        peripheral = nil; control = nil; isConnected = false; hasLiveDeviceList = false; preferencePackets = [:]; modeEditingVerified = false
+        transport?.close()
+        controlEndpoint = nil; peripheralIdentity = nil
+        isConnected = false; hasLiveDeviceList = false; preferencePackets = [:]; modeEditingVerified = false
         lifecycle.linkLost(); connectionState = lifecycle.state
         deviceRefreshTask?.cancel(); deviceRefreshTask = nil
         outgoing.removeAll(); writeInProgress = false; reassembler.reset()
     }
 
     private var snapshotStore: ConfirmedSnapshotStore? {
-        guard let directory = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false) else { return nil }
-        return ConfirmedSnapshotStore(fileURL: directory.appendingPathComponent("QuietControl/LastConfirmedState.json"))
+        ConfirmedSnapshotStore(fileURL: environment.snapshotURL)
     }
     private func restoreCachedProfile() {
-        guard let id = UserDefaults.standard.string(forKey: "quietcontrol.lastPeripheral").flatMap(UUID.init(uuidString:)) else { return }
+        guard let id = environment.defaults.string(forKey: "quietcontrol.lastPeripheral").flatMap(UUID.init(uuidString:)) else { return }
         guard let saved = snapshotStore?.load(for: id) else {
             if !isConnected { hasSavedProfile = false; modes = []; eq = []; devices = []; mode = nil; lastConfirmedAt = nil; battery = nil; manufacturer = ""; model = ""; firmware = ""; controllerAddress = nil; multipoint = nil }
             return
@@ -1222,8 +1211,8 @@ final class QuietComfortSession: NSObject, ObservableObject {
         lastConfirmedAt = saved.lastSeen; hasSavedProfile = true
     }
     private func persistSnapshot() {
-        guard !isPreview, isConnected, hasLiveDeviceList, let peripheral, let mode else { return }
-        let snapshot = ConfirmedSnapshot(peripheralID: peripheral.identifier, manufacturer: manufacturer, model: model,
+        guard !isPreview, isConnected, hasLiveDeviceList, let identity = peripheralIdentity, let mode else { return }
+        let snapshot = ConfirmedSnapshot(peripheralID: identity, manufacturer: manufacturer, model: model,
             firmware: firmware, modes: modes, devices: devices, eq: eq, lastMode: mode,
             lastSeen: lastContactAt ?? Date(), battery: battery, controllerAddress: controllerAddress, multipoint: multipoint)
         do {
@@ -1235,8 +1224,9 @@ final class QuietComfortSession: NSObject, ObservableObject {
     private func scheduleSnapshot() {
         snapshotTask?.cancel()
         snapshotTask = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
-            guard let self, !self.isWorking else { return }
+            guard let self else { return }
+            do { try await Task.sleep(nanoseconds: UInt64(environment.timing.snapshotDebounce * 1_000_000_000)) } catch { return }
+            guard !self.isWorking else { return }
             self.persistSnapshot()
         }
     }
@@ -1249,7 +1239,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
         }
     }
 
-    private var proofKey: String { "quietcontrol.verified.\(peripheral?.identifier.uuidString ?? "").\(model).\(firmware)" }
+    private var proofKey: String { "quietcontrol.verified.\(peripheralIdentity?.uuidString ?? "").\(model).\(firmware)" }
 
     private func readSnapshot(includeModes: Bool) async throws {
         battery = try await PrinceProtocol.battery(from: request(PrinceProtocol.batteryRequest())[0])
@@ -1273,11 +1263,11 @@ final class QuietComfortSession: NSObject, ObservableObject {
     private func setModeConfirmed(_ index: UInt8) async throws {
         guard modes.contains(where: { $0.index == index }) else { throw QCSessionError.unexpected("That listening mode is not present on this QC.") }
         _ = try await request(PrinceProtocol.selectMode(index))
-        for _ in 0..<5 {
+        for _ in 0..<environment.timing.modeConfirmationAttempts {
             let reported = try await PrinceProtocol.currentMode(from: request(PrinceProtocol.modeRequest())[0])
             mode = reported
             if reported == index { log("Mode \(index) confirmed."); return }
-            try await Task.sleep(nanoseconds: 200_000_000)
+            try await Task.sleep(nanoseconds: UInt64(environment.timing.modeConfirmationDelay * 1_000_000_000))
         }
         throw QCSessionError.timedOut("The QC did not confirm the requested mode.")
     }
@@ -1294,46 +1284,20 @@ final class QuietComfortSession: NSObject, ObservableObject {
         try await setModeConfirmed(checkpoint.mode)
     }
 
-    private func readText(_ uuid: String, in service: CBService) async throws -> String {
-        guard let peripheral, let characteristic = service.characteristics?.first(where: { $0.uuid == CBUUID(string: uuid) && $0.properties.contains(.read) }) else {
-            throw QCSessionError.unavailable("Required device identity field \(uuid) is missing.")
-        }
-        try await wait(for: .metadata(characteristic.uuid)) { peripheral.readValue(for: characteristic) }
-        guard let value = characteristic.value, let text = String(data: value, encoding: .utf8) else { throw BMAPError.malformedPayload }
-        return text.trimmingCharacters(in: .controlCharacters)
-    }
-
-    private func wait(for stage: Stage, action: () -> Void) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            self.stage = stage; stageWaiter = continuation
-            if stage != .connection { armSetupTimeout(stage) }
-            action()
-        }
-    }
-
-    private func armSetupTimeout(_ stage: Stage) {
-        stageTimer?.cancel()
-        stageTimer = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 10_000_000_000) } catch { return }
-            guard let self, self.stage == stage else { return }
-            self.completeStage(.failure(QCSessionError.timedOut("Bluetooth setup timed out at \(stage).")))
-        }
-    }
-
-    private func completeStage(_ result: Result<Void, Error>) {
-        stageTimer?.cancel(); stageTimer = nil; stage = nil
-        let continuation = stageWaiter; stageWaiter = nil
-        continuation?.resume(with: result)
+    private func requirePeripheralIdentity() throws -> UUID {
+        guard let peripheralIdentity else { throw QCSessionError.disconnected }
+        return peripheralIdentity
     }
 
     private func request(_ frame: BMAPFrame, modes: Bool = false, optionalActionReply: Bool = false) async throws -> [BMAPFrame] {
-        guard !needsResynchronization, commandWaiter == nil, let peripheral, peripheral.state == .connected, control != nil else { throw QCSessionError.disconnected }
+        guard !needsResynchronization, commandWaiter == nil, let transport, transport.isConnected,
+              controlEndpoint != nil else { throw QCSessionError.disconnected }
         let run = operationID
-        let pause = 0.2 - Date().timeIntervalSince(lastSent)
+        let pause = environment.timing.requestSpacing - Date().timeIntervalSince(lastSent)
         if pause > 0 { try await Task.sleep(nanoseconds: UInt64(pause * 1_000_000_000)) }
         try Task.checkCancellation()
         try requireRun(run)
-        guard commandWaiter == nil, self.peripheral === peripheral else { throw QCSessionError.disconnected }
+        guard commandWaiter == nil, self.transport === transport else { throw QCSessionError.disconnected }
         return try await withCheckedThrowingContinuation { continuation in
             expectedBlock = frame.block; expectedFunction = frame.function; collectingModes = modes
             self.optionalActionReply = optionalActionReply
@@ -1343,9 +1307,10 @@ final class QuietComfortSession: NSObject, ObservableObject {
             catch { completeCommand(.failure(error)); return }
             log("TX \(frame.encoded.hexString)")
             commandTimer = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: optionalActionReply ? 350_000_000 : 3_000_000_000)
-                guard !Task.isCancelled else { return }
                 guard let self else { return }
+                let timeout = optionalActionReply ? self.environment.timing.optionalActionTimeout : self.environment.timing.commandTimeout
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                guard !Task.isCancelled else { return }
                 if self.optionalActionReply { self.completeCommand(.success([])) }
                 else { self.completeCommand(.failure(QCSessionError.timedOut("The QC did not answer BMAP [\(frame.block).\(frame.function)]."))) }
             }
@@ -1354,15 +1319,19 @@ final class QuietComfortSession: NSObject, ObservableObject {
     }
 
     private func flushWrites() {
-        guard let peripheral, let control, !writeInProgress else { return }
-        let kind: CBCharacteristicWriteType = control.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+        guard let transport, let endpoint = controlEndpoint, !writeInProgress else { return }
+        let withoutResponse = endpoint.writeWithoutResponse
         while let segment = outgoing.first {
-            if kind == .withoutResponse && !peripheral.canSendWriteWithoutResponse { return }
-            guard segment.count <= peripheral.maximumWriteValueLength(for: kind) else { completeCommand(.failure(QCSessionError.unexpected("The negotiated BLE write size is too small."))); return }
+            if withoutResponse && !transport.canSendWriteWithoutResponse { return }
+            guard segment.count <= transport.maximumWriteLength(for: endpoint, withoutResponse: withoutResponse) else {
+                completeCommand(.failure(QCSessionError.unexpected("The negotiated BLE write size is too small.")))
+                return
+            }
             outgoing.removeFirst(); lastSent = Date()
-            if kind == .withResponse { writeInProgress = true }
-            peripheral.writeValue(segment, for: control, type: kind)
-            if kind == .withResponse { return }
+            if !withoutResponse { writeInProgress = true }
+            do { try transport.write(segment, to: endpoint, withoutResponse: withoutResponse) }
+            catch { completeCommand(.failure(error)); return }
+            if !withoutResponse { return }
         }
     }
 
@@ -1385,8 +1354,9 @@ final class QuietComfortSession: NSObject, ObservableObject {
                     replies.append(frame)
                     drainTimer?.cancel()
                     drainTimer = Task { [weak self] in
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                        guard !Task.isCancelled, let self else { return }
+                        guard let self else { return }
+                        try? await Task.sleep(nanoseconds: UInt64(self.environment.timing.modeDrainDelay * 1_000_000_000))
+                        guard !Task.isCancelled else { return }
                         self.completeCommand(.success(self.replies))
                     }
                 } else if frame.block == expectedBlock && frame.function == expectedFunction
@@ -1412,17 +1382,6 @@ final class QuietComfortSession: NSObject, ObservableObject {
         }
         if continuation != nil { log("Command finished in \(Int(Date().timeIntervalSince(commandStarted) * 1000)) ms.") }
         continuation?.resume(with: result)
-    }
-
-    private func radioChanged() {
-        guard let central, stage == .radio else { return }
-        switch central.state {
-        case .poweredOn: completeStage(.success(()))
-        case .poweredOff: completeStage(.failure(QCSessionError.unavailable("Turn on Bluetooth in iPhone Settings.")))
-        case .unauthorized: completeStage(.failure(QCSessionError.unavailable("Allow Bluetooth access in QuietControl settings.")))
-        case .unsupported: completeStage(.failure(QCSessionError.unavailable("Use a physical iPhone for Bluetooth control.")))
-        default: break
-        }
     }
 
     private func requireRun(_ run: UUID) throws {
@@ -1457,7 +1416,8 @@ final class QuietComfortSession: NSObject, ObservableObject {
     }
 
     private func documents(_ name: String) throws -> URL {
-        try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: environment.reportsDirectory, withIntermediateDirectories: true)
+        return environment.reportsDirectory.appendingPathComponent(name)
     }
     private func save<T: Encodable>(_ value: T, named name: String) throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
@@ -1514,78 +1474,52 @@ final class QuietComfortSession: NSObject, ObservableObject {
     }
 }
 
-extension QuietComfortSession: @preconcurrency CBCentralManagerDelegate, @preconcurrency CBPeripheralDelegate {
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        log("Bluetooth radio state: \(central.state.rawValue).")
-        switch central.state {
-        case .poweredOff: lifecycle.radioUnavailable(.bluetoothOff)
-        case .unauthorized: lifecycle.radioUnavailable(.permissionNeeded)
-        case .unsupported: lifecycle.radioUnavailable(.unavailable)
-        case .poweredOn: lifecycle.radioReady()
-        default: break
-        }
-        connectionState = lifecycle.state
-        radioChanged()
-        if central.state == .poweredOn { startIfNeeded() }
-        else if peripheral != nil { closeLink() }
-    }
-    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
-        guard let id = UserDefaults.standard.string(forKey: "quietcontrol.lastPeripheral").flatMap(UUID.init(uuidString:)),
-              let found = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral])?.first(where: { $0.identifier == id }) else { return }
-        guard lifecycle.wantsConnection else {
-            central.cancelPeripheralConnection(found)
-            log("Ignored restored connection because auto-connect is paused.")
-            return
-        }
-        peripheral = found; found.delegate = self; isRestoring = true
-        log("Restored CoreBluetooth peripheral; rebuilding and validating the BMAP session.")
+extension QuietComfortSession: QCByteTransportDelegate {
+    func transport(_ transport: QCByteTransport, didReceive segment: Data) {
+        receive(segment)
     }
 
-    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        guard self.peripheral === peripheral, stage == .connection else { return }
-        completeStage(.success(()))
+    func transport(_ transport: QCByteTransport, didFailReceive error: Error) {
+        completeCommand(.failure(error))
     }
-    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        guard self.peripheral === peripheral else { return }
-        completeStage(.failure(error ?? QCSessionError.disconnected))
+
+    func transport(_ transport: QCByteTransport, didFinishWrite error: Error?) {
+        writeInProgress = false
+        if let error { completeCommand(.failure(error)) } else { flushWrites() }
     }
-    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        guard self.peripheral === peripheral else { return }
+
+    func transportIsReadyForMoreWrites(_ transport: QCByteTransport) {
+        flushWrites()
+    }
+
+    func transport(_ transport: QCByteTransport, didDisconnect error: Error?) {
         failure = error?.localizedDescription ?? QCSessionError.disconnected.localizedDescription
         log("Disconnected: \(failure ?? ""); domain \((error as NSError?)?.domain ?? "none"), code \((error as NSError?)?.code ?? 0).")
         closeLink()
         scheduleReconnect()
     }
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard self.peripheral === peripheral, stage == .services else { return }
-        completeStage(error.map { .failure($0) } ?? .success(()))
-    }
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard self.peripheral === peripheral, stage == .characteristics(service.uuid) else { return }
-        completeStage(error.map { .failure($0) } ?? .success(()))
-    }
-    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
-        guard self.peripheral === peripheral, control === characteristic, stage == .notify else { return }
-        if let error { completeStage(.failure(error)) }
-        else if characteristic.isNotifying { completeStage(.success(())) }
-        else { completeStage(.failure(QCSessionError.unexpected("The QC did not enable command responses."))) }
-    }
-    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard self.peripheral === peripheral else { return }
-        if stage == .metadata(characteristic.uuid) {
-            completeStage(error.map { .failure($0) } ?? .success(())); return
+
+    func transport(_ transport: QCByteTransport, radioStateChanged state: QCTransportRadioState) {
+        log("Bluetooth radio state: \(state).")
+        switch state {
+        case .poweredOff: lifecycle.radioUnavailable(.bluetoothOff)
+        case .unauthorized: lifecycle.radioUnavailable(.permissionNeeded)
+        case .unsupported: lifecycle.radioUnavailable(.unavailable)
+        case .poweredOn: lifecycle.radioReady()
+        case .unknown, .resetting: break
         }
-        guard control === characteristic else { return }
-        if let error { completeCommand(.failure(error)) }
-        else if let value = characteristic.value { receive(value) }
+        connectionState = lifecycle.state
+        if state == .poweredOn { startIfNeeded() }
+        else if isConnected { closeLink() }
     }
-    func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard self.peripheral === peripheral, control === characteristic else { return }
-        writeInProgress = false
-        if let error { completeCommand(.failure(error)) } else { flushWrites() }
-    }
-    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
-        guard self.peripheral === peripheral else { return }
-        flushWrites()
+
+    func transportDidRestoreLink(_ transport: QCByteTransport) {
+        guard lifecycle.wantsConnection else {
+            transport.close()
+            log("Ignored restored connection because auto-connect is paused.")
+            return
+        }
+        isRestoring = true
+        log("Restored CoreBluetooth peripheral; rebuilding and validating the BMAP session.")
     }
 }

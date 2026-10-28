@@ -167,6 +167,10 @@ struct QuietControlView: View {
             Text(session.connectionState.title).font(.caption).foregroundStyle(.secondary)
             if session.connectionState == .connecting { ProgressView().controlSize(.mini) }
         }.frame(minHeight: 20, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("connection-status")
+            .accessibilityLabel(session.connectionState.title)
+            .accessibilityValue(session.isConnected ? "Live" : "Offline")
     }
     @ViewBuilder private var batteryBadge: some View {
         if session.isConnected, let battery = session.battery {
@@ -175,6 +179,7 @@ struct QuietControlView: View {
                 Text("\(battery)%").font(.caption.monospacedDigit())
             }.foregroundStyle(QCTheme.battery(battery))
                 .fixedSize().accessibilityElement(children: .ignore)
+                .accessibilityIdentifier("battery-level")
                 .accessibilityLabel("Battery \(battery) percent")
         }
     }
@@ -244,6 +249,7 @@ struct QuietControlView: View {
         .contentShape(RoundedRectangle(cornerRadius: 20))
         .onLongPressGesture(minimumDuration: 0.5) { openModeEditor(mode.index) }
         .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("current-mode")
         .accessibilityLabel(live ? "Current mode, \(mode.displayName)" : "Last used mode, \(mode.displayName)")
         .accessibilityValue(modeDescription(mode))
         .accessibilityAction(named: "Edit mode") { openModeEditor(mode.index) }
@@ -285,6 +291,7 @@ struct QuietControlView: View {
         })
         .animation(.easeOut(duration: 0.18), value: selected)
         .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("mode-\(index)")
         .accessibilityLabel(lastUsed ? "\(title), last used" : title)
         .accessibilityValue(selected ? "Selected" : session.isConnected ? "" : "Unavailable")
         .accessibilityAddTraits([.isButton])
@@ -665,7 +672,7 @@ private struct EqualizerView: View {
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("Equalizer").navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            if let data = UserDefaults.standard.data(forKey: "quietcontrol.eqPresets"),
+            if let data = session.environment.defaults.data(forKey: "quietcontrol.eqPresets"),
                let saved = try? JSONDecoder().decode([SavedEQPreset].self, from: data) {
                 presets = saved.filter { $0.values.count == 3 && $0.values.allSatisfy { (-10...10).contains($0) } }
             }
@@ -741,7 +748,7 @@ private struct EqualizerView: View {
         .accessibilityValue("\(values.map(signed).joined(separator: ", "))\(selected ? ", current" : "")")
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
-    private func savePresets() { if let data = try? JSONEncoder().encode(presets) { UserDefaults.standard.set(data, forKey: "quietcontrol.eqPresets") } }
+    private func savePresets() { if let data = try? JSONEncoder().encode(presets) { session.environment.defaults.set(data, forKey: "quietcontrol.eqPresets") } }
     private func signed(_ value: Int) -> String { value > 0 ? "+\(value)" : "\(value)" }
     private func endEditing() { editing = false; activeBand = nil; previewValues = nil; session.setEditingEQ(false) }
     private func commitBand(_ index: Int) {
@@ -1209,6 +1216,26 @@ private struct HeadphoneSettingsView: View {
                         Button("Verify mode & EQ controls") { showingModeCheck = true }.disabled(!session.isConnected || session.isWorking)
                         Button("Verify device controls") { showingDeviceCheck = true }.disabled(!session.isConnected || session.isWorking)
                         Button("Connection inspection", action: inspect).disabled(session.isWorking)
+                        if let evidence = session.testModeEvidence {
+                            Section("Test mode evidence") {
+                                Text(evidence)
+                                    .font(.caption2.monospaced())
+                                    .textSelection(.enabled)
+                                    .accessibilityIdentifier("test-mode-evidence")
+                                    .accessibilityLabel("Test mode evidence")
+                                    .accessibilityValue(evidence)
+                            }
+                        }
+                        if let transcript = session.testTranscript {
+                            Section("Test transcript") {
+                                Text(transcript)
+                                    .font(.caption2.monospaced())
+                                    .textSelection(.enabled)
+                                    .accessibilityIdentifier("test-transcript")
+                                    .accessibilityLabel("Test transcript")
+                                    .accessibilityValue(transcript)
+                            }
+                        }
                     }.navigationTitle("Diagnostics")
                 }
                 .confirmationDialog("Turn off multipoint?", isPresented: $confirmingMultipointOff, titleVisibility: .visible) {
@@ -1335,6 +1362,7 @@ private struct QCFeedbackOverlay: ViewModifier {
                         } else { Image(systemName: feedback.symbol).font(.caption) }
                     }.foregroundStyle(feedback.isError ? Color.red : QCTheme.accent).frame(width: 14, height: 14)
                     Text(feedback.text).font(.caption).multilineTextAlignment(.center)
+                        .accessibilityIdentifier("feedback-toast")
                     if feedback.undo != nil {
                         Button("Undo") { Task { await session.undoSwap(feedback) } }
                             .font(.caption.weight(.semibold)).foregroundStyle(QCTheme.accent)
@@ -1345,6 +1373,7 @@ private struct QCFeedbackOverlay: ViewModifier {
                 .background(scheme == .dark ? Color(red: 0.18, green: 0.21, blue: 0.19) : Color(red: 0.89, green: 0.93, blue: 0.90), in: RoundedRectangle(cornerRadius: 13))
                 .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
                 .padding(.horizontal, 24).padding(.bottom, 18)
+                .accessibilityIdentifier("feedback-toast")
                 .allowsHitTesting(feedback.undo != nil).accessibilityElement(children: feedback.undo != nil ? .contain : .combine)
                 .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 7)))
                 .id(feedback.id)

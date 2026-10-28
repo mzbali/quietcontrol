@@ -41,14 +41,22 @@ final class BluetoothProbe: NSObject, ObservableObject {
     private var currentRead: CBCharacteristic?
     private let defaults: UserDefaults
     private let rememberedKey = "quietcontrol.lastPeripheral"
+    private let testMode: Bool
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, testMode: Bool = false) {
         self.defaults = defaults
+        self.testMode = testMode
         super.init()
         refreshAccessories(save: false)
     }
 
     func startScan() {
+        guard !testMode else {
+            phase = .unavailable
+            message = "Connection inspection is not available in the simulator test environment. It never accesses a real Bluetooth radio."
+            log(message)
+            return
+        }
         stopConnection()
         report = ProbeReport()
         persistenceError = nil
@@ -104,6 +112,11 @@ final class BluetoothProbe: NSObject, ObservableObject {
     }
 
     func connect(to device: NearbyDevice) {
+        guard !testMode else {
+            phase = .unavailable
+            message = "Connection inspection is not available in the simulator test environment."
+            return
+        }
         guard let central, central.state == .poweredOn, let peripheral = peripherals[device.id] else { return }
         stopConnection()
         scanRequested = false
