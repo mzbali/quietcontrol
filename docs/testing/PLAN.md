@@ -1,7 +1,8 @@
 # QuietControl pre-install testing
 
-Status: transport, runner and wider UI integrated into the testing base on
-28 October 2026. Protocol-fault coverage and final runner mapping/acceptance remain.
+Status: transport, wider UI and nine protocol/recovery cases integrated into the
+testing base on 28 October 2026. Final host-runner specification: INTEGRATION.md;
+runner commands, supported evidence and acceptance record: README.md.
 Baseline: main `3e154d9`; 33 SwiftPM tests and Debug simulator build pass.
 No UI-test target exists at baseline. No phone installation is part of this phase.
 
@@ -187,6 +188,22 @@ and audits enabled Save. Independent focused1/1 and full32/32 native runs pass
 0reported/ignored/failed audit issues in both contexts. No exemptions were used.
 Held-drag video, minimumOS/compact and physical acceptance remain explicit gaps.
 The wider journeys still need host-manifest/artifact integration; main is unchanged.
+
+### Fault/recovery acceptance record
+
+PR #6 is integrated into the testing base. Nine new cases exercise the real byte
+pipeline, timeout, malformed/fragmented/unrelated replies, disconnect, generation
+isolation, preference restoration/replay refusal and corrupt offline cache.
+Review strengthened exact packet counts, production decoder progress, sub-timeout
+framing failure and byte-identical retained journals. A later repeated full run
+exposed an intermittent editor audit failure despite an earlier identical-binary
+pass; every outcome is retained. The corrected test separately captures Wind Block
+clearance, then requires a settled hero viewport and identical geometry around
+the audit without exemptions. Independent corrected-source run: 41/41 native
+(24 session +17 UI), zero failed/skipped; all12 audits 0/0/0; core33 and builds /
+Release exclusion pass. A root spaced-hex assertion mistake was retained and
+corrected before that review. Simulator acceptance does not establish that a
+timing race can never recur. Final host integration follows INTEGRATION.md.
 
 ## Delegation comparison requested by the user
 
