@@ -14,7 +14,12 @@
   -scheme QuietControl -configuration Release -sdk iphoneos
   -destination 'generic/platform=iOS' -derivedDataPath build/VerificationRelease
   CODE_SIGNING_ALLOWED=NO build.
-- Session/UI commands: added by Wave 1; report exact simulator destination,
+- Session/UI: QuietControl.xctestplan on the QuietControl scheme contains seven
+  app-hosted session tests and four UI journeys at the reviewed foundation.
+  Use xcodebuild test -project QuietControl.xcodeproj -scheme QuietControl
+  -testPlan QuietControl -destination 'platform=iOS Simulator,id=<owned-UUID>'
+  -derivedDataPath build/<unique-run> -resultBundlePath build/<unique-result>.xcresult
+  -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO. Report exact destination,
   test identifiers/counts, and xcresult path. All testing synthetic and simulator-only.
 - Data copy: none. Never fetch phone app data, pairing addresses, or real reports.
 - Pages: Home, Equalizer, Focus editor, Headphone Settings, Connection details,
