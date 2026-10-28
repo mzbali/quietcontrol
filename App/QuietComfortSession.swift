@@ -148,6 +148,13 @@ final class QuietComfortSession: NSObject, ObservableObject {
         return nil
         #endif
     }
+    /// Records a real UI gesture boundary for evidence. This is a trace only: it
+    /// never performs or approves the action being reviewed.
+    func recordTestEvent(_ message: String) {
+        #if DEBUG && targetEnvironment(simulator)
+        environment.harness?.evidence.event(message)
+        #endif
+    }
     private var lastContactAt: Date?
     private var isEstablishing = false
     private var isInspecting = false
@@ -513,7 +520,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
             let device = try await DeviceManagementProtocol.device(from: request(DeviceManagementProtocol.infoRequest(address))[0], expected: address)
             if let index = devices.firstIndex(where: { $0.address == address }) { devices[index] = device }
             if device.isConnected == connected { log("Audio \(connected ? "connection" : "disconnection") confirmed for \(device.name). Control link retained."); return }
-            try await Task.sleep(nanoseconds: 400_000_000)
+            try await Task.sleep(nanoseconds: UInt64(environment.timing.deviceConfirmationInterval * 1_000_000_000))
         }
         throw QCSessionError.timedOut("The QC did not confirm the requested audio connection. Make sure the other device is nearby and Bluetooth is on.")
     }
@@ -523,7 +530,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
         for _ in 0..<6 {
             activeAudioAddress = try await DeviceManagementProtocol.activeAddress(from: request(DeviceManagementProtocol.sourceRequest())[0])
             if activeAudioAddress == address { log("Requested audio source confirmed."); return }
-            try await Task.sleep(nanoseconds: 350_000_000)
+            try await Task.sleep(nanoseconds: UInt64(environment.timing.routeConfirmationInterval * 1_000_000_000))
         }
         throw QCSessionError.timedOut("The QC did not confirm that audio switched. The target device may need to start playback.")
     }
@@ -573,11 +580,13 @@ final class QuietComfortSession: NSObject, ObservableObject {
                     self.log("Asked the QC to stop connecting \(target).")
                 } catch { self.log("Stop request for \(target): \(error.localizedDescription)") }
                 var restored = false
-                for attempt in 1...8 where !restored && !self.needsResynchronization {
+                for attempt in 1...environment.timing.deviceRestoreAttempts where !restored && !self.needsResynchronization {
                     do { try await self.setAudioConnectedConfirmed(replacement, connected: true); restored = true }
                     catch {
                         self.log("Restoring \(old.name), attempt \(attempt): \(error.localizedDescription)")
-                        if attempt < 8 { try? await Task.sleep(nanoseconds: 3_000_000_000) }
+                        if attempt < self.environment.timing.deviceRestoreAttempts {
+                            try? await Task.sleep(nanoseconds: UInt64(self.environment.timing.deviceRestoreRetryDelay * 1_000_000_000))
+                        }
                     }
                 }
                 try? await self.readDevices()
