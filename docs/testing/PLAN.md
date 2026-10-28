@@ -1,6 +1,7 @@
 # QuietControl pre-install testing
 
-Status: Wave 1 integrated into the testing base on 28 October 2026; Wave 2 pending.
+Status: transport, runner and wider UI integrated into the testing base on
+28 October 2026. Protocol-fault coverage and final runner mapping/acceptance remain.
 Baseline: main `3e154d9`; 33 SwiftPM tests and Debug simulator build pass.
 No UI-test target exists at baseline. No phone installation is part of this phase.
 
@@ -131,7 +132,7 @@ Runner slice owns verification scripts and testing documentation. Add:
 - No provisioning/profile changes, real-phone install, app launch on phone,
   production data, radio writes, publication, paid CI, or deployment.
 
-## Wave 3: fault/recovery coverage
+## Wave 3: fault/recovery coverage, then final runner mapping
 
 Sequential extension of fixture/session tests after Wave 2 integration. Add delayed,
 missing, malformed, fragmented and stale replies; disconnect during writes;
@@ -140,6 +141,10 @@ mismatch; once-per-session restoration gates; and cache corruption. Use controll
 timing in session tests and a small representative native UI fault suite.
 Existing short-Auto-Off hardware incident remains unresolved; do not repeat those
 physical writes. Simulated acceptance never closes that hardware question.
+Complete fault-test names/evidence before the final host-manifest integration so
+there is one complete mapping of all executable tests. Until that integration the
+strict runner correctly rejects the newly expanded native suite as unmanifested;
+raw explicit Xcode plans provide intermediate evidence, not full phase acceptance.
 
 ## Review and completion
 
@@ -169,6 +174,19 @@ final session7 pass, and unsigned Release build passes. A new test initially
 matched startup waiting before connect; its predicate was corrected and the first
 failed xcresult retained. No production criteria were weakened. PR #1 is merged
 into testing/xcuitest-base, not main. Full phase acceptance remains outstanding.
+
+### Wider UI acceptance record
+
+PR #4 with corrective PR #5 is now integrated into the testing base. Several
+genuine first-run accessibility failures were found and retained: blanket
+suppression, content sampled behind pinned Save, enabled glass Save contrast and
+toolbar disappearance while scrolling. Final reviewed UI source8271904 preserves
+both Save actions, using an opaque pinned top row; requires unobscured geometry
+and audits enabled Save. Independent focused1/1 and full32/32 native runs pass
+(15session+17UI), core33 pass, builds/Release exclusion pass. All12screens have
+0reported/ignored/failed audit issues in both contexts. No exemptions were used.
+Held-drag video, minimumOS/compact and physical acceptance remain explicit gaps.
+The wider journeys still need host-manifest/artifact integration; main is unchanged.
 
 ## Delegation comparison requested by the user
 
