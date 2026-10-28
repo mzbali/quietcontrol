@@ -137,6 +137,8 @@ enum QCTestScenario: String, CaseIterable {
     case permissionDenied = "permission-denied"
     case pendingConnection = "pending-connection"
     case firstRun = "first-run"
+    case preferenceRecovery = "preference-recovery"
+    case preferenceRecoveryRejected = "preference-recovery-rejected"
 
     /// Synthetic firmware string the fixture reports for this scenario.
     var firmware: String {

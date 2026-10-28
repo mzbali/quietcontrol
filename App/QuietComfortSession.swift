@@ -148,6 +148,10 @@ final class QuietComfortSession: NSObject, ObservableObject {
         return nil
         #endif
     }
+    #if DEBUG && targetEnvironment(simulator)
+    /// The byte-boundary fixture, for arming bounded faults after normal setup.
+    var testSimulator: QCSimulatorPeripheral? { transport as? QCSimulatorPeripheral }
+    #endif
     /// Records a real UI gesture boundary for evidence. This is a trace only: it
     /// never performs or approves the action being reviewed.
     func recordTestEvent(_ message: String) {
