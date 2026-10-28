@@ -328,6 +328,64 @@ final class QuietControlUITests: XCTestCase {
         XCTAssertTrue(isClear(), "Wind Block labels must be fully visible between dismiss and pinned Save before auditing: title=\(title.frame), detail=\(detail.frame), save=\(bottomSave.frame)")
         XCTAssertTrue(topSave.isEnabled && topSave.isHittable, "Pinned top Save stays available after scrolling")
         XCTAssertEqual(strength.value as? String, "7 of 10", "Scrolling must not adjust the meter")
+        attachScreenshot(app, name: "editor-large-text-wind-clear")
+    }
+
+    /// Audit from an explicit, settled hero viewport. The Wind Block reachability
+    /// check above uses a different scroll position; never carry that offset into
+    /// an audit which may visit the hero. Fail if the viewport changes during it.
+    private func auditLargeEditor(_ app: XCUIApplication) {
+        let summary = element("mode-summary", in: app)
+        let strength = element("mode-strength", in: app)
+        let cancel = app.buttons["mode-cancel"]
+        let topSave = app.buttons["mode-save-toolbar"]
+        let bottomSave = element("mode-save-bottom", in: app)
+        func heroIsClear() -> Bool {
+            summary.exists && summary.isHittable && strength.isHittable
+                && summary.frame.minY >= cancel.frame.maxY + 8
+                && strength.frame.maxY <= bottomSave.frame.minY - 16
+                && topSave.isEnabled && topSave.isHittable && bottomSave.isEnabled
+                && strength.value as? String == "7 of 10"
+        }
+        for _ in 0..<5 {
+            if heroIsClear() { break }
+            let scroll = app.scrollViews.firstMatch
+            scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.25))
+                .press(forDuration: 0.05, thenDragTo: scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.85)))
+        }
+        func frames() -> [CGRect] { [summary.frame, strength.frame, cancel.frame, topSave.frame, bottomSave.frame] }
+        var previous: [CGRect] = []
+        var stableSince = Date()
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let current = frames()
+            guard heroIsClear() else { previous = []; stableSince = Date(); return false }
+            if current != previous { previous = current; stableSince = Date(); return false }
+            return Date().timeIntervalSince(stableSince) >= 0.5
+        }, object: nil)
+        let stable = XCTWaiter.wait(for: [settled], timeout: 8) == .completed
+        XCTAssertTrue(stable, "The hero and both Save controls must settle before the audit: \(frames())")
+        guard stable else { return }
+        let before = frames()
+        attachScreenshot(app, name: "editor-large-text-before-audit")
+        performAudit(app, context: "editor-large-text")
+        let after = frames()
+        XCTAssertTrue(heroIsClear(), "The audited hero must remain clear of pinned actions")
+        XCTAssertEqual(after, before, "The audit must not silently reset the editor scroll offset")
+        func json(_ values: [CGRect]) -> [[String: CGFloat]] {
+            values.map { ["x": $0.minX, "y": $0.minY, "width": $0.width, "height": $0.height] }
+        }
+        let geometry: [String: Any] = [
+            "screen": "editor-large-text", "elements": ["mode-summary", "mode-strength", "mode-cancel", "mode-save-toolbar", "mode-save-bottom"],
+            "stableSeconds": 0.5, "before": json(before), "after": json(after),
+            "heroClearAfter": heroIsClear(), "strength": strength.value as? String ?? "missing"
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: geometry, options: [.sortedKeys]),
+           let text = String(data: data, encoding: .utf8) {
+            let attachment = XCTAttachment(string: text)
+            attachment.name = "audit-geometry-editor-large-text"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
     }
 
     private func attachScreenshot(_ app: XCUIApplication, name: String) {
@@ -976,7 +1034,7 @@ final class QuietControlUITests: XCTestCase {
         XCTAssertTrue(element("mode-save-bottom", in: large).exists)
         // Assert actual clear geometry rather than assuming one swipe was enough.
         prepareDirtyEditorAudit(large, largeText: true)
-        performAudit(large, context: "editor-large-text")
+        auditLargeEditor(large)
         attachScreenshot(large, name: "editor-large-text")
         large.buttons["mode-cancel"].tap()
 
