@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 
@@ -42,7 +43,7 @@ SYNTHETIC = {
 
 DEVICES = [
     "QuietControlTests/QuietControlSessionTests/testOne()",
-    "QuietControlTests/QuietControlSessionTests/testTwo()",
+    "QuietControlTests/QuietControlSessionTests/testQuietWaitingClearsBusyWithoutReplacingPendingConnection()",
     "QuietControlUITests/QuietControlUITests/testJourney()",
 ]
 
@@ -188,6 +189,22 @@ def valid_rows():
 
 
 class ManifestTests(unittest.TestCase):
+    def test_evidence_cannot_be_disabled_for_arbitrary_tests(self):
+        for bucket in ("session", "ui"):
+            with self.subTest(bucket=bucket):
+                manifest = manifest_fixture()
+                entry = manifest["session"]["tests"][0] if bucket == "session" else manifest["journeys"][0]
+                entry["run"]["artifacts"] = False
+                with self.assertRaisesRegex(verify.VerifyError, "no-artifact exemption"):
+                    verify.validate_manifest(manifest)
+
+    def test_allowlisted_pending_test_needs_no_container_evidence(self):
+        manifest = manifest_fixture()
+        verify.validate_manifest(manifest)
+        entry = manifest["session"]["tests"][1]
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(verify.inspect_entry_artifacts(entry, Path(tmp), SYNTHETIC), [])
+
     def test_current_manifest_is_valid_and_selectable(self):
         manifest = verify.load_manifest()
         names = {journey["name"] for journey in manifest["journeys"]}
@@ -243,6 +260,11 @@ class ManifestTests(unittest.TestCase):
 
 
 class DiscoveryAndResultTests(unittest.TestCase):
+    def test_disabled_unmanifested_test_cannot_hide_from_coverage(self):
+        errors = verify.check_discovered(manifest_fixture(), DEVICES,
+            ["QuietControlUITests/QuietControlUITests/testNewDisabled()"])
+        self.assertTrue(any("disabled" in error and "testNewDisabled" in error for error in errors), errors)
+
     def enumeration(self, enabled):
         return {"errors": [], "values": [{"enabledTests": [{"identifier": item} for item in enabled], "disabledTests": []}]}
 
@@ -528,6 +550,59 @@ class TranscriptTests(unittest.TestCase):
             make_export(root, "pending-1234", [])
             errors = verify.inspect_entry_artifacts(entry, root, SYNTHETIC)
         self.assertTrue(any("unexpected app-container artifacts" in error for error in errors), errors)
+
+
+class ProcessOutcomeTests(unittest.TestCase):
+    def run_with_passing_result(self, returncode, timed_out):
+        class FakeRunner:
+            def run(self, command, label, timeout):
+                result = Path(command[command.index("-resultBundlePath") + 1])
+                result.mkdir(parents=True)
+                return verify.CommandResult(command, returncode, result.parent / "test.log", timed_out=timed_out)
+
+            def json_command(self, command, label):
+                if "summary" in command:
+                    document = {
+                        "result": "Passed", "totalTestCount": 1, "passedTests": 1,
+                        "failedTests": 0, "skippedTests": 0, "expectedFailures": 0,
+                        "testFailures": [], "devicesAndConfigurations": [{"device": {"deviceId": "UDID"}}],
+                    }
+                else:
+                    document = {"testNodes": [{"nodeType": "Test Case", "name": "testJourney()",
+                        "nodeIdentifier": DEVICES[2], "result": "Passed"}]}
+                return document, verify.CommandResult(command, 0, Path("result.log"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            return verify._run_xcode_tests(FakeRunner(), Path(tmp), {"udid": "UDID"},
+                Path("fixture.xctestrun"), "sample", [DEVICES[2]])
+
+    def test_nonzero_exit_rejects_even_a_passing_xcresult(self):
+        result = self.run_with_passing_result(65, False)
+        self.assertEqual(result["counts"]["passed"], 1, "Passing evidence is still parsed and retained.")
+        self.assertTrue(any("exit 65" in error for error in result["errors"]), result)
+
+    def test_timeout_rejects_even_with_zero_exit_and_passing_xcresult(self):
+        result = self.run_with_passing_result(0, True)
+        self.assertEqual(result["counts"]["passed"], 1)
+        self.assertTrue(any("timed out" in error for error in result["errors"]), result)
+
+    def test_successful_process_and_passing_results_are_accepted(self):
+        self.assertEqual(self.run_with_passing_result(0, False)["errors"], [])
+
+    def test_requested_developer_directory_reaches_subprocesses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            requested = str((Path(tmp) / "Other Xcode.app/Contents/Developer").resolve())
+            with patch.dict(verify.os.environ, {"DEVELOPER_DIR": requested}):
+                runner = verify.CommandRunner(Path(tmp) / "logs")
+            self.assertEqual(runner.developer_dir, requested)
+            self.assertTrue(runner.environment["PATH"].startswith(requested + "/usr/bin:"))
+            result = runner.run([sys.executable, "-c", "import os; print(os.environ['DEVELOPER_DIR'])"],
+                                "environment", 10, capture=True)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.strip(), requested)
+            with self.assertRaises(verify.BlockedError) as blocked:
+                verify.preflight(runner, manifest_fixture())
+            self.assertIn(requested, str(blocked.exception))
 
 
 class CleanupTests(unittest.TestCase):
