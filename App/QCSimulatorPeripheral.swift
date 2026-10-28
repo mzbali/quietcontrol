@@ -452,6 +452,7 @@ final class QCSimulatorPeripheral: QCByteTransport {
         guard !frames.isEmpty else { return }
         switch behavior {
         case .withholdReply:
+            repliesInFlight += 1
             evidence.event("Withheld simulated reply in generation \(generation); only the session timeout can finish it.")
         case .malformedEnvelope:
             evidence.event("Injecting a malformed Bose envelope in generation \(generation).")
