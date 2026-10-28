@@ -311,6 +311,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
             do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) } catch { return }
             guard let self, !self.isConnected, self.lifecycle.wantsConnection else { return }
             self.lifecycle.settleWaiting(); self.connectionState = self.lifecycle.state
+            if self.transport?.isWaitingForConnection == true { self.isWorking = false }
             self.log("Waiting quietly; the existing CoreBluetooth connection request remains pending.")
         }
     }
@@ -344,6 +345,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
             beginConnectingPresentation()
             let link = try await transport.connect(rememberedID: id)
             try requireRun(run)
+            isWorking = true
             peripheralIdentity = link.identifier
             manufacturer = link.manufacturer
             model = link.model
@@ -495,8 +497,9 @@ final class QuietComfortSession: NSObject, ObservableObject {
 
     private func scheduleDeviceRefresh() {
         guard deviceRefreshTask == nil, isConnected, !isWorking, !editingEQ else { return }
+        let delay = environment.timing.deviceRefreshDelay
         deviceRefreshTask = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 300_000_000) } catch { return }
+            do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) } catch { return }
             guard let self else { return }
             self.deviceRefreshTask = nil
             guard self.isConnected, !self.isWorking else { return }
@@ -1129,7 +1132,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
         // Reads share the wire with actions, but do not disable the dashboard.
         // A tap during a read waits for its reply; never overlap BMAP requests.
         while isWorking {
-            do { try await Task.sleep(nanoseconds: 20_000_000); try requireRun(run) }
+            do { try await Task.sleep(nanoseconds: UInt64(environment.timing.refreshPollInterval * 1_000_000_000)); try requireRun(run) }
             catch { return }
             guard isConnected else { return }
         }
@@ -1510,7 +1513,7 @@ extension QuietComfortSession: QCByteTransportDelegate {
         }
         connectionState = lifecycle.state
         if state == .poweredOn { startIfNeeded() }
-        else if isConnected { closeLink() }
+        else if isConnected || transport.identifier != nil { closeLink() }
     }
 
     func transportDidRestoreLink(_ transport: QCByteTransport) {
