@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "description": "Native simulator verification manifest. Every executable Xcode test must appear exactly once. Extra manifest fields are additive; new UI/session tests must be added here before the runner will accept them.",
+  "schemaVersion": 2,
+  "description": "Complete preinstall verification manifest. Every executable Xcode test appears exactly once with its required run set and explicit evidence expectations. Unknown keys, unmatched runs and unproven evidence fail closed.",
   "synthetic": {
     "peripheralUUID": "8A1B2C3D-4E5F-4061-8273-849506172839",
     "manufacturer": "Bose Corporation",
@@ -8,182 +8,2948 @@
     "firmware": "1.0.6-80+f5f219b",
     "defaultsSuitePrefix": "uk.co.mzbali.quietcontrol.ui-tests.",
     "devices": [
-      { "address": "a1 b2 c3 d4 e5 01", "name": "iPhone", "connected": true },
-      { "address": "a1 b2 c3 d4 e5 02", "name": "MacBook Pro", "connected": true },
-      { "address": "a1 b2 c3 d4 e5 03", "name": "Work laptop", "connected": false }
+      {
+        "address": "a1 b2 c3 d4 e5 01",
+        "name": "iPhone",
+        "connected": true
+      },
+      {
+        "address": "a1 b2 c3 d4 e5 02",
+        "name": "MacBook Pro",
+        "connected": true
+      },
+      {
+        "address": "a1 b2 c3 d4 e5 03",
+        "name": "Work laptop",
+        "connected": false
+      }
     ]
   },
   "simulator": {
-    "deviceTypes": ["iPhone Duo", "iPhone 17", "iPhone 16"],
+    "deviceTypes": [
+      "iPhone Duo",
+      "iPhone 17",
+      "iPhone 16"
+    ],
     "runtime": "iOS 27.1",
     "minimumRuntimeMajor": 17,
-    "compactDeviceTypes": ["iPhone SE (3rd generation)", "iPhone 16e"]
+    "compactDeviceTypes": [
+      "iPhone SE (3rd generation)",
+      "iPhone 16e"
+    ]
   },
   "session": {
     "target": "QuietControlTests",
     "tests": [
       {
-        "id": "QuietControlTests/QuietControlSessionTests/testConnectedModeSwitchWritesLiteralPacketAndConfirmsWithIndependentGet()",
-        "label": "session-connected",
-        "run": { "prefix": "unit-", "scenario": "connected", "reset": true },
-        "expect": {
-          "snapshot": { "lastMode": 1, "eq": [-2, 4, 2] },
-          "peripheral": { "connected": true, "mode": 1, "eq": [-2, 4, 2], "multipoint": true },
-          "transcript": {
-            "scenarios": ["connected"],
-            "order": [
-              "outbound:1f0305020100",
-              "inbound:1f03030101",
-              "outbound:1f030100",
-              "inbound:1f03030101"
-            ],
-            "required": ["outbound:01070202fe00"]
-          }
-        }
-      },
-      {
-        "id": "QuietControlTests/QuietControlSessionTests/testRejectedModeKeepsQuietAndReportsExplicitFailure()",
-        "label": "session-rejected",
-        "run": { "prefix": "reject-", "scenario": "mode-rejected", "reset": true },
-        "expect": {
-          "snapshot": { "lastMode": 0, "eq": [-1, 4, 2] },
-          "peripheral": { "connected": true, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
-          "transcript": {
-            "scenarios": ["mode-rejected"],
-            "order": ["outbound:1f0305020100", "inbound:1f03040104"],
-            "forbidden": ["inbound:1f03030101"]
-          }
-        }
-      },
-      {
-        "id": "QuietControlTests/QuietControlSessionTests/testAcceptedButUnconfirmedModeDoesNotReportSuccess()",
-        "label": "session-unconfirmed",
-        "run": { "prefix": "unconf-", "scenario": "mode-unconfirmed", "reset": true },
-        "expect": {
-          "snapshot": { "lastMode": 0, "eq": [-1, 4, 2] },
-          "peripheral": { "connected": true, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
-          "transcript": {
-            "scenarios": ["mode-unconfirmed"],
-            "order": [
-              "outbound:1f0305020100",
-              "outbound:1f030100",
-              "inbound:1f03030100"
-            ],
-            "forbidden": ["inbound:1f03030101"]
-          }
-        }
-      },
-      {
-        "id": "QuietControlTests/QuietControlSessionTests/testOfflineCachedProfileHasNoLiveAuthority()",
-        "label": "session-offline",
-        "run": { "prefix": "offline-", "scenario": "offline-cached", "reset": false },
-        "expect": {
-          "snapshot": { "lastMode": 1, "eq": [-1, 4, 2] },
-          "peripheral": { "connected": false, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
-          "transcript": {
-            "scenarios": ["connected", "offline-cached"],
-            "order": ["outbound:1f0305020100", "inbound:1f03030101"],
-            "noOutboundScenarios": ["offline-cached"]
-          }
-        }
-      },
-      {
-        "id": "QuietControlTests/QuietControlSessionTests/testRefreshAndModeActionAreSerialized()",
-        "label": "session-serial",
-        "run": { "prefix": "serial-", "scenario": "connected", "reset": true },
-        "expect": {
-          "snapshot": { "lastMode": 1, "eq": [-1, 4, 2] },
-          "peripheral": { "connected": true, "mode": 1, "eq": [-1, 4, 2], "multipoint": true },
-          "transcript": {
-            "scenarios": ["connected"],
-            "order": [
-              "outbound:1f0305020100",
-              "inbound:1f03030101",
-              "outbound:1f030100",
-              "inbound:1f03030101"
-            ],
-            "forbiddenMessages": ["Protocol overlap"]
-          }
-        }
-      },
-      {
         "id": "QuietControlTests/QuietControlSessionTests/testRadioLossCancelsPendingSetupAndAllowsAnotherConnectionAttempt()",
         "label": "session-radio-loss",
-        "run": { "prefix": "pending-", "artifacts": false }
+        "runs": [
+          {
+            "prefix": "pending-",
+            "artifacts": false
+          }
+        ]
       },
       {
         "id": "QuietControlTests/QuietControlSessionTests/testQuietWaitingClearsBusyWithoutReplacingPendingConnection()",
         "label": "session-quiet-wait",
-        "run": { "prefix": "pending-", "artifacts": false }
+        "runs": [
+          {
+            "prefix": "pending-",
+            "artifacts": false
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testConnectedModeSwitchWritesLiteralPacketAndConfirmsWithIndependentGet()",
+        "label": "session-connected",
+        "runs": [
+          {
+            "prefix": "unit-",
+            "scenario": "connected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 1,
+                "eq": [
+                  -2,
+                  4,
+                  2
+                ],
+                "modes": [
+                  0,
+                  1,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": true,
+                "mode": 1,
+                "eq": [
+                  -2,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "connected"
+                ],
+                "order": [
+                  "outbound:1f0305020100",
+                  "inbound:1f03030101",
+                  "outbound:1f030100",
+                  "inbound:1f03030101"
+                ],
+                "required": [
+                  "outbound:01070202fe00",
+                  "inbound:0107030cf60afe00f60a0401f60a0202"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:1f0305020100",
+                    "equals": 1
+                  },
+                  {
+                    "token": "outbound:01070202fe00",
+                    "equals": 1
+                  }
+                ],
+                "forbidEvents": [
+                  "Protocol overlap"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testRejectedModeKeepsQuietAndReportsExplicitFailure()",
+        "label": "session-rejected",
+        "runs": [
+          {
+            "prefix": "reject-",
+            "scenario": "mode-rejected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": true,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "mode-rejected"
+                ],
+                "order": [
+                  "outbound:1f0305020100",
+                  "inbound:1f03040104"
+                ],
+                "forbidden": [
+                  "inbound:1f03030101"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:1f0305020100",
+                    "equals": 1
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testAcceptedButUnconfirmedModeDoesNotReportSuccess()",
+        "label": "session-unconfirmed",
+        "runs": [
+          {
+            "prefix": "unconf-",
+            "scenario": "mode-unconfirmed",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": true,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "mode-unconfirmed"
+                ],
+                "order": [
+                  "outbound:1f0305020100",
+                  "outbound:1f030100",
+                  "inbound:1f03030100"
+                ],
+                "forbidden": [
+                  "inbound:1f03030101"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:1f0305020100",
+                    "equals": 1
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testOfflineCachedProfileHasNoLiveAuthority()",
+        "label": "session-offline",
+        "runs": [
+          {
+            "prefix": "offline-",
+            "scenario": "offline-cached",
+            "reset": false,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 1,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "connected",
+                  "offline-cached"
+                ],
+                "order": [
+                  "outbound:1f0305020100",
+                  "inbound:1f03030101",
+                  "outbound:1f030100"
+                ],
+                "noOutboundScenarios": [
+                  "offline-cached"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:1f0305020100",
+                    "equals": 1
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testRefreshAndModeActionAreSerialized()",
+        "label": "session-serial",
+        "runs": [
+          {
+            "prefix": "serial-",
+            "scenario": "connected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 1,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": true,
+                "mode": 1,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "connected"
+                ],
+                "order": [
+                  "outbound:1f0305020100",
+                  "inbound:1f03030101",
+                  "outbound:1f030100",
+                  "inbound:1f03030101"
+                ],
+                "forbiddenMessages": [
+                  "Protocol overlap"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:1f0305020100",
+                    "equals": 1
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testUnavailableRadioNeverStartsAutomaticConnection()",
+        "label": "session-radio-off",
+        "runs": [
+          {
+            "prefix": "radio-unit-radio-off-",
+            "scenario": "radio-off",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json"
+                ],
+                "forbid": [
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "absent"
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "radio-off"
+                ],
+                "noOutboundScenarios": [
+                  "radio-off"
+                ],
+                "forbidEvents": [
+                  "Connect request",
+                  "connect request"
+                ]
+              }
+            }
+          },
+          {
+            "prefix": "radio-unit-permission-denied-",
+            "scenario": "permission-denied",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json"
+                ],
+                "forbid": [
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "absent"
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "permission-denied"
+                ],
+                "noOutboundScenarios": [
+                  "permission-denied"
+                ],
+                "forbidEvents": [
+                  "Connect request",
+                  "connect request"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testNoEQDeviceWriteExistsBeforeExplicitCommit()",
+        "label": "session-eq-no-prewrite",
+        "runs": [
+          {
+            "prefix": "unit-eq-",
+            "scenario": "connected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  7,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": true,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  7,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "connected"
+                ],
+                "order": [
+                  "outbound:010702020701",
+                  "inbound:0107030cf60aff00f60a0701f60a0202",
+                  "outbound:01070100"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:010702020701",
+                    "equals": 1
+                  }
+                ],
+                "noOutboundBetween": [
+                  {
+                    "start": "event:Connect request 1 completed",
+                    "end": "outbound:010702020701",
+                    "prefix": "010702"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testRejectedEQWriteKeepsConfirmedValuesWithIndependentRead()",
+        "label": "session-eq-rejected",
+        "runs": [
+          {
+            "prefix": "eqfail-",
+            "scenario": "eq-rejected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": true,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "eq-rejected"
+                ],
+                "order": [
+                  "outbound:010702020701",
+                  "inbound:0107040104",
+                  "inbound:0107030cf60aff00f60a0401f60a0202"
+                ],
+                "forbidden": [
+                  "inbound:0107030cf60aff00f60a0701f60a0202"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:010702020701",
+                    "equals": 1
+                  }
+                ]
+              }
+            },
+            "sharedPrefixGroup": "eqfail-session",
+            "sharedMatchToken": "outbound:010702020701"
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testApplyEQRollbackRestoresConfirmedValuesAfterRejection()",
+        "label": "session-eq-rollback",
+        "runs": [
+          {
+            "prefix": "eqfail-",
+            "scenario": "eq-rejected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": true,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "eq-rejected"
+                ],
+                "order": [
+                  "inbound:0107040104",
+                  "outbound:010702020401",
+                  "inbound:0107030cf60aff00f60a0401f60a0202"
+                ],
+                "required": [
+                  "outbound:01070202ff00"
+                ],
+                "forbidden": [
+                  "inbound:0107030cf60aff00f60a0701f60a0202"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:010702020401",
+                    "equals": 1
+                  }
+                ]
+              }
+            },
+            "sharedPrefixGroup": "eqfail-session",
+            "sharedMatchToken": "outbound:010702020401"
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testPowerSettingsUseCorrectBlocksAndPreservePayloadBits()",
+        "label": "session-settings",
+        "runs": [
+          {
+            "prefix": "settings-",
+            "scenario": "connected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": true,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01",
+                "preferences": {
+                  "autoOff": "00",
+                  "rememberMode": "01",
+                  "selfVoice": "01 03",
+                  "shortcut": "80 09 0e",
+                  "voicePrompts": "01"
+                }
+              },
+              "transcript": {
+                "scenarios": [
+                  "connected"
+                ],
+                "required": [
+                  "outbound:0104020114",
+                  "outbound:0104020100",
+                  "outbound:1f05020100",
+                  "outbound:1f05020101",
+                  "outbound:010b02020103",
+                  "outbound:0109020380090e",
+                  "outbound:0103020121",
+                  "outbound:0103020101"
+                ],
+                "forbidden": [
+                  "outbound:010e*"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:0104020100",
+                    "equals": 1
+                  },
+                  {
+                    "token": "outbound:1f05020101",
+                    "equals": 1
+                  }
+                ],
+                "order": [
+                  "outbound:0104020114",
+                  "inbound:0104030114",
+                  "outbound:0104020100",
+                  "inbound:0104030100",
+                  "outbound:1f05020100",
+                  "inbound:1f05030100",
+                  "outbound:1f05020101",
+                  "inbound:1f05030101"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testUnsupportedFirmwareDisablesPowerWrites()",
+        "label": "session-firmware",
+        "runs": [
+          {
+            "prefix": "firmware-",
+            "scenario": "firmware-unsupported",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "firmware": "1.1.9-99+deadbeef"
+              },
+              "peripheral": {
+                "connected": true,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.1.9-99+deadbeef",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "firmware-unsupported"
+                ],
+                "required": [
+                  "outbound:01040100",
+                  "outbound:1f050100"
+                ],
+                "forbidden": [
+                  "outbound:010402*",
+                  "outbound:1f0502*"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testUnreachableAudioDeviceRestoresOriginalConnections()",
+        "label": "session-unreachable",
+        "runs": [
+          {
+            "prefix": "unreachable-",
+            "scenario": "audio-unreachable",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": true,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "audio-unreachable"
+                ],
+                "required": [
+                  "outbound:0401050700a1b2c3d4e503",
+                  "inbound:0401040108",
+                  "outbound:0401050700a1b2c3d4e502",
+                  "inbound:04050314a1b2c3d4e5030000*"
+                ],
+                "requireEvents": [
+                  "Simulated Work laptop is unreachable",
+                  "Stopped paging the unreachable Work laptop"
+                ],
+                "forbidden": [
+                  "inbound:04050314a1b2c3d4e5030100*"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testPendingConnectionPauseRelaunchAndSingleResume()",
+        "label": "session-waiting",
+        "runs": [
+          {
+            "prefix": "waiting-",
+            "scenario": "pending-connection",
+            "reset": false,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json"
+                ],
+                "forbid": [
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "absent"
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "pending-connection"
+                ],
+                "noOutboundScenarios": [
+                  "pending-connection"
+                ],
+                "requireEvents": [
+                  "Connect request 1 is pending",
+                  "Closed the pending simulated connection"
+                ],
+                "counts": [
+                  {
+                    "token": "event:Connect request",
+                    "equals": 2
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testTimeoutInvalidatesCommandWithoutPersistingUnconfirmedMode()",
+        "label": "session-timeout",
+        "runs": [
+          {
+            "prefix": "fault-timeout-",
+            "scenario": "connected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 1,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "connected"
+                ],
+                "order": [
+                  "outbound:1f0305020100",
+                  "inbound:1f030700",
+                  "outbound:1f030100"
+                ],
+                "forbidden": [
+                  "inbound:1f03030101"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:1f0305020100",
+                    "equals": 1
+                  },
+                  {
+                    "token": "outbound:1f030100",
+                    "equals": 1,
+                    "after": "outbound:1f0305020100"
+                  }
+                ],
+                "noOutboundBetween": [
+                  {
+                    "start": "event:Withheld simulated reply",
+                    "end": "event:Closed simulated transport generation"
+                  }
+                ],
+                "requireEvents": [
+                  "Withheld simulated reply in generation 1",
+                  "Timeout inspected before any fresh handshake: connected=false mode=Optional(0)",
+                  "Test radio state set to poweredOff"
+                ],
+                "forbiddenMessages": [
+                  "Protocol overlap"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testUnrelatedNotificationsCannotCompletePendingModeRead()",
+        "label": "session-unrelated",
+        "runs": [
+          {
+            "prefix": "fault-unrelated-",
+            "scenario": "connected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 1,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 1,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "connected"
+                ],
+                "order": [
+                  "outbound:1f0305020100",
+                  "inbound:1f030700",
+                  "outbound:1f030100",
+                  "event:Held simulated reply in generation 1",
+                  "inbound:020203014d",
+                  "inbound:0107030cf60aff00f60a0401f60a0202",
+                  "inbound:010a030101",
+                  "event:Released held reply for generation 1",
+                  "inbound:1f03030101"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:1f0305020100",
+                    "equals": 1
+                  },
+                  {
+                    "token": "outbound:1f030100",
+                    "equals": 2
+                  }
+                ],
+                "forbiddenMessages": [
+                  "Protocol overlap"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testMalformedEnvelopeClosesLinkAndPreservesConfirmedSnapshot()",
+        "label": "session-malformed",
+        "runs": [
+          {
+            "prefix": "fault-malformed-",
+            "scenario": "connected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "connected"
+                ],
+                "order": [
+                  "outbound:02020100",
+                  "inbound:121f030000",
+                  "event:Closed simulated transport generation 1"
+                ],
+                "required": [
+                  "inbound:121f030000"
+                ],
+                "forbidden": [
+                  "inbound:1f03030101"
+                ],
+                "requireEvents": [
+                  "Injecting a malformed Bose envelope in generation 1"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testFragmentedAndCoalescedModeRepliesUseRealReceivePipeline()",
+        "label": "session-fragmented",
+        "runs": [
+          {
+            "prefix": "fault-fragmented-",
+            "scenario": "connected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "modes": [
+                  0,
+                  1,
+                  2
+                ],
+                "focusAncStrength": 5,
+                "focusWindBlock": false
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "connected"
+                ],
+                "order": [
+                  "outbound:1f010500",
+                  "event:Fragmenting coalesced mode reply into 9 segments",
+                  "event:Released held reply for generation 1: mode reply remainder"
+                ],
+                "segmentHeaders": [
+                  "80",
+                  "81",
+                  "82",
+                  "83",
+                  "84",
+                  "85",
+                  "86",
+                  "87",
+                  "88"
+                ],
+                "segmentHeadersAfter": "Fragmenting coalesced mode reply",
+                "requireEvents": [
+                  "Fragmenting coalesced mode reply into 9 segments; delivered 1 and held 8 in generation 1",
+                  "Fragmented mode decoder observed exactly 3 new RX 1f06032f frames after release; none while partial"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:1f010500",
+                    "equals": 2
+                  }
+                ]
+              },
+              "lifecycle": {
+                "rxPrefix": "1f 06 03 2f",
+                "expectedTotal": 6
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testDisconnectDuringEQWriteDoesNotReportSuccess()",
+        "label": "session-eq-disconnect",
+        "runs": [
+          {
+            "prefix": "fault-eq-disconnect-",
+            "scenario": "connected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  7,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "connected"
+                ],
+                "order": [
+                  "outbound:010702020701",
+                  "inbound:0107030cf60aff00f60a0701f60a0202",
+                  "event:Closed simulated transport generation 1"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:010702020701",
+                    "equals": 1
+                  },
+                  {
+                    "token": "outbound:01070100",
+                    "equals": 0,
+                    "after": "outbound:010702020701"
+                  }
+                ],
+                "requireEvents": [
+                  "fault disconnected the link after the accepted write reply",
+                  "EQ disconnect inspected: transient eq=[-1, 7, 2]"
+                ],
+                "forbiddenMessages": [
+                  "Protocol overlap"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testLateNotificationFromClosedGenerationCannotSatisfyNewCommand()",
+        "label": "session-generation",
+        "runs": [
+          {
+            "prefix": "fault-generation-",
+            "scenario": "connected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 1,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 1,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "connected"
+                ],
+                "order": [
+                  "event:Opened simulated transport generation 1",
+                  "event:Closed simulated transport generation 1",
+                  "event:Opened simulated transport generation 2",
+                  "event:Held simulated reply in generation 2",
+                  "event:Dropped old-generation simulated reply",
+                  "event:Released held reply for generation 2"
+                ],
+                "required": [
+                  "outbound:1f0305020100",
+                  "outbound:1f030100",
+                  "inbound:1f03030101"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:1f0305020100",
+                    "equals": 1
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testInterruptedPreferenceRestoresOriginalValueAndClearsJournal()",
+        "label": "session-pref-restore",
+        "runs": [
+          {
+            "prefix": "fault-pref-restore-",
+            "scenario": "preference-recovery",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "LastConfirmedState.json"
+                ],
+                "forbid": [
+                  "PreferenceRecovery.json"
+                ]
+              },
+              "snapshot": {
+                "state": "present",
+                "lastMode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ]
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01",
+                "preferences": {
+                  "rememberMode": "01"
+                }
+              },
+              "journal": {
+                "state": "absent"
+              },
+              "transcript": {
+                "scenarios": [
+                  "preference-recovery"
+                ],
+                "order": [
+                  "outbound:1f05020101",
+                  "inbound:1f05030101",
+                  "outbound:1f050100",
+                  "inbound:1f05030101"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:1f05020101",
+                    "equals": 1
+                  }
+                ],
+                "requireEvents": [
+                  "Simulated rememberMode write stored 01"
+                ],
+                "forbidden": [
+                  "outbound:010302",
+                  "outbound:010b02"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testFailedOrMismatchedRestorationKeepsJournalAndStopsReplay()",
+        "label": "session-pref-mismatch",
+        "runs": [
+          {
+            "prefix": "fault-pref-fw-",
+            "scenario": "preference-recovery",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "PreferenceRecovery.json"
+                ],
+                "forbid": [
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "absent"
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01",
+                "preferences": {
+                  "rememberMode": "00"
+                }
+              },
+              "journal": {
+                "state": "present",
+                "fields": {
+                  "firmware": "9.9.9-1+wrong",
+                  "name": "rememberMode",
+                  "payload": "AQ=="
+                }
+              },
+              "transcript": {
+                "scenarios": [
+                  "preference-recovery"
+                ],
+                "required": [
+                  "inbound:00050310312e302e362d38302b66356632313962"
+                ],
+                "forbidden": [
+                  "outbound:1f0502*",
+                  "outbound:010302*"
+                ]
+              }
+            }
+          },
+          {
+            "prefix": "fault-pref-dev-",
+            "scenario": "preference-recovery",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "PreferenceRecovery.json"
+                ],
+                "forbid": [
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "absent"
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01",
+                "preferences": {
+                  "rememberMode": "00"
+                }
+              },
+              "journal": {
+                "state": "present",
+                "fields": {
+                  "firmware": "1.0.6-80+f5f219b",
+                  "name": "rememberMode",
+                  "payload": "AQ=="
+                },
+                "peripheralNotSynthetic": true
+              },
+              "transcript": {
+                "scenarios": [
+                  "preference-recovery"
+                ],
+                "forbidden": [
+                  "outbound:1f0502*",
+                  "outbound:010302*"
+                ]
+              }
+            }
+          },
+          {
+            "prefix": "fault-pref-rejected-",
+            "scenario": "preference-recovery-rejected",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json",
+                  "PreferenceRecovery.json"
+                ],
+                "forbid": [
+                  "LastConfirmedState.json"
+                ]
+              },
+              "snapshot": {
+                "state": "absent"
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01",
+                "preferences": {
+                  "rememberMode": "00"
+                }
+              },
+              "journal": {
+                "state": "present",
+                "literal": "{\"peripheral\":\"8A1B2C3D-4E5F-4061-8273-849506172839\",\"firmware\":\"1.0.6-80+f5f219b\",\"name\":\"rememberMode\",\"payload\":\"AQ==\"}"
+              },
+              "transcript": {
+                "scenarios": [
+                  "preference-recovery-rejected"
+                ],
+                "required": [
+                  "inbound:1f05040104"
+                ],
+                "counts": [
+                  {
+                    "token": "outbound:1f05020101",
+                    "equals": 1
+                  }
+                ],
+                "forbidden": [
+                  "outbound:1f050100",
+                  "outbound:010302*"
+                ],
+                "requireEvents": [
+                  "Rejected one simulated rememberMode restoration write",
+                  "Opened simulated transport generation 2"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "QuietControlTests/QuietControlSessionTests/testCorruptOfflineSnapshotNeverGrantsControlAuthority()",
+        "label": "session-corrupt-snapshot",
+        "runs": [
+          {
+            "prefix": "fault-corrupt-snapshot-",
+            "scenario": "offline-cached",
+            "reset": true,
+            "expect": {
+              "files": {
+                "require": [
+                  "test-config.json",
+                  "transport.jsonl",
+                  "peripheral-state.json",
+                  "LifecycleDiagnostics.jsonl",
+                  "SessionDiagnostics.json"
+                ]
+              },
+              "snapshot": {
+                "state": "corrupt",
+                "literal": "{\"version\":1,\"lastMode\":0,\"modes\":[{\"index\":0"
+              },
+              "peripheral": {
+                "connected": false,
+                "mode": 0,
+                "eq": [
+                  -1,
+                  4,
+                  2
+                ],
+                "multipoint": true,
+                "firmware": "1.0.6-80+f5f219b",
+                "activeAudio": "a1 b2 c3 d4 e5 01"
+              },
+              "transcript": {
+                "scenarios": [
+                  "offline-cached"
+                ],
+                "noOutboundScenarios": [
+                  "offline-cached"
+                ],
+                "requireEvents": [
+                  "Corrupt snapshot outcome: connected=false mode=nil battery=nil model="
+                ],
+                "forbidden": [
+                  "outbound:1f030502*",
+                  "inbound:1f030301*"
+                ]
+              }
+            }
+          }
+        ]
       }
     ]
   },
   "journeys": [
     {
       "name": "modes",
-      "test": "QuietControlUITests/QuietControlUITests/testTappingAwareUsesRealControlAndConfirmsWithIndependentGet()",
-      "run": { "prefix": "aware-", "scenario": "connected", "reset": true },
-      "expect": {
-        "snapshot": { "lastMode": 1, "eq": [-1, 4, 2] },
-        "peripheral": { "connected": true, "mode": 1, "eq": [-1, 4, 2], "multipoint": true },
-        "transcript": {
-          "scenarios": ["connected"],
-          "order": [
-            "outbound:1f0305020100",
-            "inbound:1f03030101",
-            "outbound:1f030100",
-            "inbound:1f03030101"
-          ]
+      "id": "QuietControlUITests/QuietControlUITests/testTappingAwareUsesRealControlAndConfirmsWithIndependentGet()",
+      "label": "ui-modes",
+      "runs": [
+        {
+          "prefix": "aware-",
+          "scenario": "connected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 1,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 1,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "connected"
+              ],
+              "order": [
+                "outbound:1f0305020100",
+                "inbound:1f03030101",
+                "outbound:1f030100",
+                "inbound:1f03030101"
+              ],
+              "counts": [
+                {
+                  "token": "outbound:1f0305020100",
+                  "equals": 1
+                }
+              ]
+            }
+          }
         }
-      }
+      ]
     },
     {
       "name": "mode-rejected",
-      "test": "QuietControlUITests/QuietControlUITests/testRejectedModeShowsFailureAndKeepsQuietSelected()",
-      "run": { "prefix": "reject-", "scenario": "mode-rejected", "reset": true },
-      "expect": {
-        "snapshot": { "lastMode": 0, "eq": [-1, 4, 2] },
-        "peripheral": { "connected": true, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
-        "transcript": {
-          "scenarios": ["mode-rejected"],
-          "order": ["outbound:1f0305020100", "inbound:1f03040104"],
-          "forbidden": ["inbound:1f03030101"]
+      "id": "QuietControlUITests/QuietControlUITests/testRejectedModeShowsFailureAndKeepsQuietSelected()",
+      "label": "ui-mode-rejected",
+      "runs": [
+        {
+          "prefix": "reject-",
+          "scenario": "mode-rejected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "mode-rejected"
+              ],
+              "order": [
+                "outbound:1f0305020100",
+                "inbound:1f03040104"
+              ],
+              "forbidden": [
+                "inbound:1f03030101"
+              ],
+              "counts": [
+                {
+                  "token": "outbound:1f0305020100",
+                  "equals": 1
+                }
+              ]
+            }
+          }
         }
-      }
+      ]
     },
     {
       "name": "mode-unconfirmed",
-      "test": "QuietControlUITests/QuietControlUITests/testUnconfirmedModeShowsFailureAndKeepsQuietSelected()",
-      "run": { "prefix": "unconf-", "scenario": "mode-unconfirmed", "reset": true },
-      "expect": {
-        "snapshot": { "lastMode": 0, "eq": [-1, 4, 2] },
-        "peripheral": { "connected": true, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
-        "transcript": {
-          "scenarios": ["mode-unconfirmed"],
-          "order": [
-            "outbound:1f0305020100",
-            "outbound:1f030100",
-            "inbound:1f03030100"
-          ],
-          "forbidden": ["inbound:1f03030101"]
+      "id": "QuietControlUITests/QuietControlUITests/testUnconfirmedModeShowsFailureAndKeepsQuietSelected()",
+      "label": "ui-mode-unconfirmed",
+      "runs": [
+        {
+          "prefix": "unconf-",
+          "scenario": "mode-unconfirmed",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "mode-unconfirmed"
+              ],
+              "order": [
+                "outbound:1f0305020100",
+                "outbound:1f030100",
+                "inbound:1f03030100"
+              ],
+              "forbidden": [
+                "inbound:1f03030101"
+              ],
+              "counts": [
+                {
+                  "token": "outbound:1f0305020100",
+                  "equals": 1
+                }
+              ]
+            }
+          }
         }
-      }
+      ]
     },
     {
       "name": "offline",
-      "test": "QuietControlUITests/QuietControlUITests/testConfirmedModePersistsAndOfflineRelaunchIsReadOnly()",
-      "run": { "prefix": "persist-", "scenario": "offline-cached", "reset": false },
-      "expect": {
-        "snapshot": { "lastMode": 1, "eq": [-1, 4, 2] },
-        "peripheral": { "connected": false, "mode": 0, "eq": [-1, 4, 2], "multipoint": true },
-        "transcript": {
-          "scenarios": ["connected", "offline-cached"],
-          "order": [
-            "outbound:1f0305020100",
-            "inbound:1f03030101"
-          ],
-          "noOutboundScenarios": ["offline-cached"]
+      "id": "QuietControlUITests/QuietControlUITests/testConfirmedModePersistsAndOfflineRelaunchIsReadOnly()",
+      "label": "ui-offline",
+      "runs": [
+        {
+          "prefix": "persist-",
+          "scenario": "offline-cached",
+          "reset": false,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 1,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": false,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "connected",
+                "offline-cached"
+              ],
+              "order": [
+                "outbound:1f0305020100",
+                "inbound:1f03030101",
+                "outbound:1f030100"
+              ],
+              "noOutboundScenarios": [
+                "offline-cached"
+              ],
+              "counts": [
+                {
+                  "token": "outbound:1f0305020100",
+                  "equals": 1
+                }
+              ]
+            }
+          }
         }
+      ]
+    },
+    {
+      "name": "eq",
+      "id": "QuietControlUITests/QuietControlUITests/testEQDragCommitsOnReleaseAndResetIsConfirmed()",
+      "label": "ui-eq",
+      "runs": [
+        {
+          "prefix": "eq-",
+          "scenario": "connected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                0,
+                0,
+                0
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                0,
+                0,
+                0
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "connected"
+              ],
+              "order": [
+                "event:eq gesture begin band 1",
+                "event:eq gesture end band 1",
+                "outbound:010702020701",
+                "inbound:0107030cf60aff00f60a0701f60a0202",
+                "outbound:010702020000",
+                "outbound:010702020001",
+                "outbound:010702020002",
+                "inbound:0107030cf60a0000f60a0001f60a0002"
+              ],
+              "counts": [
+                {
+                  "token": "outbound:010702020701",
+                  "equals": 1
+                }
+              ],
+              "noOutboundBetween": [
+                {
+                  "start": "event:eq gesture begin band 1",
+                  "end": "event:eq gesture end band 1"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "eqfail",
+      "id": "QuietControlUITests/QuietControlUITests/testRejectedEQRestoresConfirmedValues()",
+      "label": "ui-eqfail",
+      "runs": [
+        {
+          "prefix": "eqfail-",
+          "scenario": "eq-rejected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "eq-rejected"
+              ],
+              "order": [
+                "outbound:010702020701",
+                "inbound:0107040104",
+                "inbound:0107030cf60aff00f60a0401f60a0202"
+              ],
+              "forbidden": [
+                "inbound:0107030cf60aff00f60a0701f60a0202"
+              ],
+              "counts": [
+                {
+                  "token": "outbound:010702020701",
+                  "equals": 1
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "presets",
+      "id": "QuietControlUITests/QuietControlUITests/testSavedEQPresetSurvivesRelaunch()",
+      "label": "ui-presets",
+      "runs": [
+        {
+          "prefix": "presets-",
+          "scenario": "connected",
+          "reset": false,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                7,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                7,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "defaults": {
+              "preset": {
+                "name": "Mine",
+                "values": [
+                  -1,
+                  7,
+                  2
+                ]
+              }
+            },
+            "transcript": {
+              "scenarios": [
+                "connected"
+              ],
+              "required": [
+                "outbound:01070202ff00",
+                "outbound:010702020701",
+                "outbound:010702020202",
+                "inbound:0107030cf60aff00f60a0701f60a0202"
+              ],
+              "counts": [
+                {
+                  "token": "outbound:010702020701",
+                  "equals": 2
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "editor",
+      "id": "QuietControlUITests/QuietControlUITests/testModeEditorCancelSaveAndFixedModeLocks()",
+      "label": "ui-editor",
+      "runs": [
+        {
+          "prefix": "editor-",
+          "scenario": "connected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "modes": [
+                0,
+                1,
+                2
+              ],
+              "focusAncStrength": 7,
+              "focusWindBlock": false
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "connected"
+              ],
+              "forbidden": [
+                "outbound:1f0305020200*"
+              ],
+              "counts": [
+                {
+                  "token": "outbound:1f0602*",
+                  "equals": 1
+                },
+                {
+                  "token": "outbound:1f030100",
+                  "atLeast": 1
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "swap",
+      "id": "QuietControlUITests/QuietControlUITests/testAudioDeviceSwapAndUndoRestoreConnections()",
+      "label": "ui-swap",
+      "runs": [
+        {
+          "prefix": "swap-",
+          "scenario": "connected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "connected"
+              ],
+              "order": [
+                "outbound:04020506a1b2c3d4e502",
+                "outbound:0401050700a1b2c3d4e503",
+                "inbound:04050314a1b2c3d4e5030100*",
+                "outbound:04020506a1b2c3d4e503",
+                "outbound:0401050700a1b2c3d4e502",
+                "outbound:04050106a1b2c3d4e502",
+                "inbound:04050314a1b2c3d4e5020100*"
+              ],
+              "required": [
+                "inbound:04050314a1b2c3d4e5030000*"
+              ],
+              "forbidden": [
+                "outbound:040c05*"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "unreachable",
+      "id": "QuietControlUITests/QuietControlUITests/testUnreachableAudioDeviceRestoresOriginalConnections()",
+      "label": "ui-unreachable",
+      "runs": [
+        {
+          "prefix": "unreachable-",
+          "scenario": "audio-unreachable",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "audio-unreachable"
+              ],
+              "required": [
+                "inbound:0401040108",
+                "outbound:0401050700a1b2c3d4e502",
+                "inbound:04050314a1b2c3d4e5030000*"
+              ],
+              "forbidden": [
+                "inbound:04050314a1b2c3d4e5030100*"
+              ],
+              "requireEvents": [
+                "Simulated Work laptop is unreachable",
+                "Stopped paging the unreachable Work laptop"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "settings",
+      "id": "QuietControlUITests/QuietControlUITests/testSettingsWritesAreIndependentlyConfirmed()",
+      "label": "ui-settings",
+      "runs": [
+        {
+          "prefix": "settings-",
+          "scenario": "connected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01",
+              "preferences": {
+                "autoOff": "00",
+                "rememberMode": "01",
+                "selfVoice": "01 02",
+                "shortcut": "80 09 03",
+                "voicePrompts": "21"
+              }
+            },
+            "transcript": {
+              "scenarios": [
+                "connected"
+              ],
+              "order": [
+                "outbound:0104020114",
+                "inbound:0104030114",
+                "outbound:01040100",
+                "inbound:0104030114",
+                "outbound:0104020100",
+                "inbound:0104030100",
+                "outbound:01040100",
+                "inbound:0104030100",
+                "outbound:1f05020100",
+                "inbound:1f05030100",
+                "outbound:1f050100",
+                "inbound:1f05030100",
+                "outbound:1f05020101",
+                "inbound:1f05030101",
+                "outbound:1f050100",
+                "inbound:1f05030101"
+              ],
+              "forbidden": [
+                "outbound:010e*"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "firmware",
+      "id": "QuietControlUITests/QuietControlUITests/testUnsupportedFirmwareDisablesPowerSettings()",
+      "label": "ui-firmware",
+      "runs": [
+        {
+          "prefix": "firmware-",
+          "scenario": "firmware-unsupported",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "firmware": "1.1.9-99+deadbeef"
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.1.9-99+deadbeef",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "firmware-unsupported"
+              ],
+              "required": [
+                "outbound:01040100",
+                "outbound:1f050100"
+              ],
+              "forbidden": [
+                "outbound:010402*",
+                "outbound:1f0502*"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "waiting",
+      "id": "QuietControlUITests/QuietControlUITests/testPauseAndQuietWaitingSurviveRelaunch()",
+      "label": "ui-waiting",
+      "runs": [
+        {
+          "prefix": "waiting-",
+          "scenario": "pending-connection",
+          "reset": false,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json"
+              ],
+              "forbid": [
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "absent"
+            },
+            "peripheral": {
+              "connected": false,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "pending-connection"
+              ],
+              "noOutboundScenarios": [
+                "pending-connection"
+              ],
+              "counts": [
+                {
+                  "token": "event:Connect request",
+                  "equals": 2
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "firstrun",
+      "id": "QuietControlUITests/QuietControlUITests/testFirstRunAndUnavailableRadioStatesAreHonest()",
+      "label": "ui-firstrun",
+      "runs": [
+        {
+          "prefix": "firstrun-a-",
+          "scenario": "first-run",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json"
+              ],
+              "forbid": [
+                "LastConfirmedState.json",
+                "peripheral-state.json"
+              ]
+            },
+            "snapshot": {
+              "state": "absent"
+            },
+            "transcript": {
+              "scenarios": [
+                "first-run"
+              ],
+              "noOutboundScenarios": [
+                "first-run"
+              ],
+              "forbidEvents": [
+                "Connect request",
+                "connect request"
+              ]
+            }
+          }
+        },
+        {
+          "prefix": "firstrun-off-",
+          "scenario": "radio-off",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json"
+              ],
+              "forbid": [
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "absent"
+            },
+            "peripheral": {
+              "connected": false,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "radio-off"
+              ],
+              "noOutboundScenarios": [
+                "radio-off"
+              ],
+              "forbidEvents": [
+                "Connect request",
+                "connect request",
+                "headphones are off"
+              ]
+            }
+          }
+        },
+        {
+          "prefix": "firstrun-denied-",
+          "scenario": "permission-denied",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json"
+              ],
+              "forbid": [
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "absent"
+            },
+            "peripheral": {
+              "connected": false,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "permission-denied"
+              ],
+              "noOutboundScenarios": [
+                "permission-denied"
+              ],
+              "forbidEvents": [
+                "Connect request",
+                "connect request"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "invalid",
+      "id": "QuietControlUITests/QuietControlUITests/testInvalidTestConfigurationFailsWithoutRadioFallback()",
+      "label": "ui-invalid",
+      "runs": [
+        {
+          "prefix": "invalid-",
+          "evidence": "invalid-configuration",
+          "expectedRuns": 0
+        }
+      ],
+      "attachments": {
+        "invalidConfiguration": true
+      }
+    },
+    {
+      "name": "probe",
+      "id": "QuietControlUITests/QuietControlUITests/testConnectionInspectionIsExplicitlyUnavailableInSimulatorTests()",
+      "label": "ui-probe",
+      "runs": [
+        {
+          "prefix": "probe-",
+          "scenario": "first-run",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json"
+              ],
+              "forbid": [
+                "LastConfirmedState.json",
+                "peripheral-state.json"
+              ]
+            },
+            "snapshot": {
+              "state": "absent"
+            },
+            "transcript": {
+              "scenarios": [
+                "first-run"
+              ],
+              "noOutboundScenarios": [
+                "first-run"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "access",
+      "id": "QuietControlUITests/QuietControlUITests/testAccessibilityAndLargeTextNavigation()",
+      "label": "ui-access",
+      "runs": [
+        {
+          "prefix": "access-light-",
+          "scenario": "connected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "connected"
+              ],
+              "counts": [
+                {
+                  "token": "outbound:1f010500",
+                  "equals": 2
+                }
+              ]
+            }
+          }
+        },
+        {
+          "prefix": "access-dark-",
+          "scenario": "connected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "connected"
+              ],
+              "counts": [
+                {
+                  "token": "outbound:1f010500",
+                  "equals": 2
+                }
+              ]
+            }
+          }
+        },
+        {
+          "prefix": "access-large-",
+          "scenario": "connected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "modes": [
+                0,
+                1,
+                2
+              ],
+              "focusAncStrength": 5,
+              "focusWindBlock": false
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "connected"
+              ],
+              "counts": [
+                {
+                  "token": "outbound:1f010500",
+                  "equals": 2
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "attachments": {
+        "audits": {
+          "contexts": [
+            "home-light",
+            "equalizer-light",
+            "editor-light",
+            "settings-light",
+            "home-dark",
+            "equalizer-dark",
+            "editor-dark",
+            "settings-dark",
+            "home-large-text",
+            "equalizer-large-text",
+            "editor-large-text",
+            "settings-large-text"
+          ],
+          "screenshots": [
+            "home-light",
+            "equalizer-light",
+            "editor-light",
+            "settings-light",
+            "home-dark",
+            "equalizer-dark",
+            "editor-dark",
+            "settings-dark",
+            "home-large-text",
+            "equalizer-large-text",
+            "editor-large-text",
+            "settings-large-text",
+            "editor-large-text-wind-clear",
+            "editor-large-text-before-audit"
+          ]
+        },
+        "geometry": true,
+        "journeyRunIDs": 3
       }
     }
   ]

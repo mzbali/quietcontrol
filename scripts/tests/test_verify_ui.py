@@ -638,3 +638,492 @@ class CleanupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ---------------------------------------------------------------------------
+# Schema 2: complete run sets and explicit evidence
+# ---------------------------------------------------------------------------
+
+V2_ID_1 = "QuietControlTests/QuietControlSessionTests/testOne()"
+V2_ID_2 = "QuietControlTests/QuietControlSessionTests/testTwo()"
+
+
+def v2_manifest():
+    return {
+        "schemaVersion": 2,
+        "synthetic": copy.deepcopy(SYNTHETIC),
+        "simulator": {
+            "deviceTypes": ["iPhone Duo"],
+            "runtime": "iOS 27.1",
+            "minimumRuntimeMajor": 17,
+            "compactDeviceTypes": ["iPhone SE (3rd generation)"],
+        },
+        "session": {
+            "target": "QuietControlTests",
+            "tests": [
+                {
+                    "id": V2_ID_1,
+                    "label": "one",
+                    "runs": [
+                        {
+                            "prefix": "unit-",
+                            "scenario": "connected",
+                            "reset": True,
+                            "expect": {
+                                "files": {"require": ["test-config.json", "transport.jsonl"]},
+                                "snapshot": {"state": "present", "lastMode": 1, "eq": [-1, 4, 2]},
+                                "peripheral": {"connected": True, "mode": 1},
+                                "transcript": {
+                                    "scenarios": ["connected"],
+                                    "order": ["outbound:1f0305020100", "inbound:1f03030101"],
+                                    "counts": [
+                                        {"token": "outbound:1f030100", "equals": 1, "after": "outbound:1f0305020100"}
+                                    ],
+                                },
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+        "journeys": [
+            {
+                "name": "fixture",
+                "id": "QuietControlUITests/QuietControlUITests/testJourney()",
+                "label": "ui-fixture",
+                "runs": [
+                    {
+                        "prefix": "ui-",
+                        "scenario": "connected",
+                        "reset": True,
+                        "expect": {"transcript": {"scenarios": ["connected"]}},
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def v2_run(tmp: Path, run_id: str, rows, *, scenario="connected", reset=True, snapshot=None,
+           state=None, config_extra=None, files=None):
+    run_dir = tmp / "ApplicationSupport" / "QuietControlUITests" / run_id
+    run_dir.mkdir(parents=True)
+    config = {
+        "scenario": scenario,
+        "runID": run_id,
+        "reset": reset,
+        "peripheral": SYNTHETIC["peripheralUUID"],
+        "defaultsSuite": SYNTHETIC["defaultsSuitePrefix"] + run_id,
+    }
+    if config_extra:
+        config.update(config_extra)
+    contents = {"test-config.json": json.dumps(config)}
+    if rows is not None:
+        contents["transport.jsonl"] = "\n".join(json.dumps(row) for row in rows) + "\n"
+    if snapshot is not None:
+        contents["LastConfirmedState.json"] = snapshot if isinstance(snapshot, str) else json.dumps(snapshot_fixture(snapshot))
+    if state is not None:
+        state = dict(state)
+        state["runID"] = run_id
+        state["scenario"] = scenario
+        contents["peripheral-state.json"] = json.dumps(state)
+    for name in files or []:
+        contents[name] = ""
+    for name, text in contents.items():
+        (run_dir / name).write_text(text, encoding="utf-8")
+    return run_dir
+
+
+def v2_rows():
+    return [
+        transcript_row(1, "event", "event", message="Configured connected."),
+        transcript_row(2, "outbound", "bmap", "1f 03 01 00"),
+        transcript_row(3, "inbound", "bmap", "1f 03 03 01 00"),
+        transcript_row(4, "outbound", "bmap", "1f 03 05 02 01 00"),
+        transcript_row(5, "inbound", "bmap", "1f 03 03 01 01"),
+        transcript_row(6, "outbound", "bmap", "1f 03 01 00"),
+        transcript_row(7, "inbound", "bmap", "1f 03 03 01 01"),
+    ]
+
+
+class Schema2ManifestTests(unittest.TestCase):
+    def test_strict_run_types_are_rejected(self):
+        for mutation in (
+            lambda m: m["session"]["tests"][0]["runs"][0].update(reset="yes"),
+            lambda m: m["session"]["tests"][0]["runs"][0]["expect"]["snapshot"].update(lastMode="1"),
+            lambda m: m["session"]["tests"][0]["runs"][0]["expect"]["transcript"]["counts"][0].update(equals=-1),
+            lambda m: m["session"]["tests"][0]["runs"][0]["expect"]["transcript"].update(order=["not-a-token"]),
+            lambda m: m["session"]["tests"][0]["runs"][0]["expect"].update(artifacts=False),
+            lambda m: m["session"]["tests"][0]["runs"][0].update(scenario=""),
+        ):
+            manifest = v2_manifest()
+            mutation(manifest)
+            with self.assertRaises(verify.VerifyError):
+                verify.validate_manifest(manifest)
+
+    def test_shared_prefix_requires_unique_match_tokens(self):
+        manifest = v2_manifest()
+        first = manifest["session"]["tests"][0]
+        second = copy.deepcopy(first)
+        second["id"] = V2_ID_2
+        for entry in (first, second):
+            entry["runs"][0]["sharedPrefixGroup"] = "same"
+            entry["runs"][0]["sharedMatchToken"] = "outbound:1f0305020100"
+        manifest["session"]["tests"].append(second)
+        with self.assertRaisesRegex(verify.VerifyError, "reuses a match token"):
+            verify.validate_manifest(manifest)
+
+    def test_incompatible_schema_version_fails_clearly(self):
+        manifest = v2_manifest()
+        manifest["schemaVersion"] = 3
+        with self.assertRaisesRegex(verify.VerifyError, "unsupported schemaVersion"):
+            verify.validate_manifest(manifest)
+
+    def test_schema1_is_still_supported(self):
+        verify.validate_manifest(manifest_fixture())
+
+
+class Schema2EvidenceTests(unittest.TestCase):
+    def inspect(self, tmp, run_id, entry, new_runs=None):
+        return verify.map_and_inspect_lane(
+            [entry], tmp, set(new_runs if new_runs is not None else [run_id]), SYNTHETIC, "session"
+        )
+
+    def test_missing_and_extra_runs_fail(self):
+        entry = v2_manifest()["session"]["tests"][0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            v2_run(root, "unit-AAAA", v2_rows(), snapshot=1,
+                   state=peripheral_fixture(mode=1))
+            v2_run(root, "unit-BBBB", v2_rows(), snapshot=1,
+                   state=peripheral_fixture(mode=1))
+            errors, _ = self.inspect(root, "unit-AAAA", entry, ["unit-AAAA", "unit-BBBB"])
+            self.assertTrue(any("expected exactly 1" in error for error in errors), errors)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            v2_run(root, "unit-AAAA", v2_rows(), snapshot=1,
+                   state=peripheral_fixture(mode=1))
+            errors, _ = self.inspect(root, "unit-AAAA", entry, [])
+            self.assertTrue(any("expected exactly 1" in error for error in errors), errors)
+
+    def test_unclaimed_run_directory_fails(self):
+        entry = v2_manifest()["session"]["tests"][0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            v2_run(root, "unit-AAAA", v2_rows(), snapshot=1,
+                   state=peripheral_fixture(mode=1))
+            v2_run(root, "stray-AAAA", v2_rows(), snapshot=1,
+                   state=peripheral_fixture(mode=1))
+            errors, _ = self.inspect(root, "unit-AAAA", entry, ["unit-AAAA", "stray-AAAA"])
+        self.assertTrue(any("not claimed by the manifest" in error for error in errors), errors)
+
+    def test_shared_prefix_is_mapped_by_evidence_not_order(self):
+        manifest = v2_manifest()
+        first = manifest["session"]["tests"][0]
+        second = copy.deepcopy(first)
+        second["id"] = V2_ID_2
+        first["runs"][0].update(prefix="eqfail-", sharedPrefixGroup="shared",
+                                 sharedMatchToken="outbound:010702020701")
+        second["runs"][0].update(prefix="eqfail-", sharedPrefixGroup="shared",
+                                 sharedMatchToken="outbound:010702020401")
+        second["runs"][0]["expect"]["transcript"] = {
+            "scenarios": ["connected"],
+            "required": ["outbound:010702020401"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_rows = v2_rows() + [transcript_row(8, "outbound", "bmap", "01 07 02 02 07 01")]
+            second_rows = v2_rows() + [transcript_row(8, "outbound", "bmap", "01 07 02 02 04 01")]
+            v2_run(root, "eqfail-AAAA", first_rows, snapshot=1, state=peripheral_fixture(mode=1))
+            v2_run(root, "eqfail-BBBB", second_rows, snapshot=1, state=peripheral_fixture(mode=1))
+            errors, details = verify.map_and_inspect_lane(
+                [first, second], root, {"eqfail-AAAA", "eqfail-BBBB"}, SYNTHETIC, "session"
+            )
+        self.assertEqual(errors, [])
+        self.assertEqual({item["runID"] for item in details}, {"eqfail-AAAA", "eqfail-BBBB"})
+
+    def test_anchored_count_rejects_a_startup_get(self):
+        entry = v2_manifest()["session"]["tests"][0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            v2_run(root, "unit-AAAA", v2_rows(), snapshot=1, state=peripheral_fixture(mode=1))
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+        self.assertEqual(errors, [])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [row for row in v2_rows() if row["sequence"] < 6]
+            v2_run(root, "unit-AAAA", rows, snapshot=1, state=peripheral_fixture(mode=1))
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+        self.assertTrue(any("occurs 0 times" in error for error in errors), errors)
+
+    def test_no_outbound_between_anchors_fails(self):
+        entry = v2_manifest()["session"]["tests"][0]
+        entry["runs"][0]["expect"]["transcript"] = {
+            "scenarios": ["connected"],
+            "noOutboundBetween": [
+                {"start": "event:Configured connected", "end": "inbound:1f03030101"}
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            v2_run(root, "unit-AAAA", v2_rows(), snapshot=1, state=peripheral_fixture(mode=1))
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+        self.assertTrue(any("unexpected outbound traffic" in error for error in errors), errors)
+
+    def test_corrupt_snapshot_requires_exact_bytes_and_absence_is_checked(self):
+        entry = v2_manifest()["session"]["tests"][0]
+        entry["runs"][0]["expect"]["snapshot"] = {"state": "corrupt", "literal": '{"version":1'}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            v2_run(root, "unit-AAAA", v2_rows(), snapshot='{"other":1}', state=peripheral_fixture(mode=1))
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+            self.assertTrue(any("do not match" in error for error in errors), errors)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            v2_run(root, "unit-AAAA", v2_rows(), snapshot='{"version":1', state=peripheral_fixture(mode=1))
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+            self.assertEqual(errors, [])
+        entry["runs"][0]["expect"]["snapshot"] = {"state": "absent"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            v2_run(root, "unit-AAAA", v2_rows(), snapshot=1, state=peripheral_fixture(mode=1))
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+        self.assertTrue(any("intentionally absent" in error for error in errors), errors)
+
+    def test_retained_journal_bytes_and_removal_are_exact(self):
+        entry = v2_manifest()["session"]["tests"][0]
+        literal = '{"peripheral":"8A1B2C3D-4E5F-4061-8273-849506172839","firmware":"1.0.6-80+f5f219b","name":"rememberMode","payload":"AQ=="}'
+        entry["runs"][0]["expect"]["journal"] = {"state": "present", "literal": literal}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = v2_run(root, "unit-AAAA", v2_rows(), snapshot=1, state=peripheral_fixture(mode=1))
+            (run_dir / "PreferenceRecovery.json").write_text(literal, encoding="utf-8")
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+            self.assertEqual(errors, [])
+            (run_dir / "PreferenceRecovery.json").write_text(literal + "\n", encoding="utf-8")
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+            self.assertTrue(any("differ from the exact seeded" in error for error in errors), errors)
+        entry["runs"][0]["expect"]["journal"] = {"state": "absent"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = v2_run(root, "unit-AAAA", v2_rows(), snapshot=1, state=peripheral_fixture(mode=1))
+            (run_dir / "PreferenceRecovery.json").write_text(literal, encoding="utf-8")
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+        self.assertTrue(any("unexpectedly retained" in error for error in errors), errors)
+
+    def test_preset_defaults_are_read_from_the_isolated_plist(self):
+        import plistlib
+
+        entry = v2_manifest()["session"]["tests"][0]
+        entry["runs"][0]["expect"]["defaults"] = {"preset": {"name": "Mine", "values": [-1, 7, 2]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = v2_run(root, "unit-AAAA", v2_rows(), snapshot=1, state=peripheral_fixture(mode=1))
+            suite = SYNTHETIC["defaultsSuitePrefix"] + "unit-AAAA"
+            prefs = root / "Preferences"
+            prefs.mkdir()
+            presets = [{"id": "x", "name": "Mine", "values": [-1, 7, 2]}]
+            with open(prefs / (suite + ".plist"), "wb") as handle:
+                plistlib.dump({"quietcontrol.eqPresets": json.dumps(presets).encode()}, handle)
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+            self.assertEqual(errors, [])
+            presets[0]["values"] = [-1, 4, 2]
+            with open(prefs / (suite + ".plist"), "wb") as handle:
+                plistlib.dump({"quietcontrol.eqPresets": json.dumps(presets).encode()}, handle)
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+        self.assertTrue(any("values" in error for error in errors), errors)
+
+    def test_fragmented_segment_headers_and_lifecycle_counts(self):
+        entry = v2_manifest()["session"]["tests"][0]
+        entry["runs"][0]["expect"]["transcript"] = {
+            "scenarios": ["connected"],
+            "segmentHeadersAfter": "Released held reply",
+            "segmentHeaders": ["80", "81"],
+        }
+        entry["runs"][0]["expect"]["lifecycle"] = {"rxPrefix": "1f 06 03 2f", "expectedTotal": 2}
+        rows = v2_rows() + [
+            transcript_row(8, "event", "event", message="Released held reply"),
+            transcript_row(9, "inbound", "segment", "80 1f 06 03 2f"),
+            transcript_row(10, "inbound", "segment", "81 00"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = v2_run(root, "unit-AAAA", rows, snapshot=1, state=peripheral_fixture(mode=1))
+            (run_dir / "LifecycleDiagnostics.jsonl").write_text(
+                "\n".join(json.dumps({"message": message}) for message in [
+                    "RX 1f 06 03 2f 00", "RX 1f 06 03 2f 01"
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            errors, _ = self.inspect(root, "unit-AAAA", entry)
+            self.assertEqual(errors, [])
+            rows[8]["bytes"] = "82 1f 06 03 2f"
+            rows[9]["bytes"] = "83 00"
+            v2_run(root, "unit-BBBB", rows, snapshot=1, state=peripheral_fixture(mode=1))
+            entry["runs"][0]["prefix"] = "unit-"
+            errors, _ = verify.map_and_inspect_lane(
+                [entry], root, {"unit-BBBB"}, SYNTHETIC, "session"
+            )
+        self.assertTrue(any("post-release segment headers" in error for error in errors), errors)
+
+
+class Schema2AttachmentTests(unittest.TestCase):
+    CONTEXTS = [f"{screen}-{config}" for config in ("light", "dark", "large-text")
+                for screen in ("home", "equalizer", "editor", "settings")]
+
+    def entry(self):
+        return {
+            "name": "access",
+            "id": "QuietControlUITests/QuietControlUITests/testAccessibilityAndLargeTextNavigation()",
+            "label": "ui-access",
+            "runs": [
+                {"prefix": "access-light-", "scenario": "connected", "reset": True,
+                 "expect": {"transcript": {"scenarios": ["connected"]}}}
+            ],
+            "attachments": {
+                "audits": {
+                    "contexts": self.CONTEXTS,
+                    "screenshots": self.CONTEXTS + [
+                        "editor-large-text-wind-clear", "editor-large-text-before-audit"
+                    ],
+                },
+                "geometry": True,
+                "journeyRunIDs": 1,
+            },
+        }
+
+    def geometry(self):
+        return {
+            "screen": "editor-large-text",
+            "elements": ["mode-summary", "mode-strength", "mode-cancel", "mode-save-toolbar", "mode-save-bottom"],
+            "stableSeconds": 0.5,
+            "before": [
+                {"x": 44, "y": 296, "width": 302, "height": 86},
+                {"x": 44, "y": 398, "width": 302, "height": 48},
+                {"x": 28, "y": 82, "width": 128, "height": 68},
+                {"x": 265, "y": 82, "width": 97, "height": 68},
+                {"x": 28, "y": 558, "width": 334, "height": 78},
+            ],
+            "after": [
+                {"x": 44, "y": 296, "width": 302, "height": 86},
+                {"x": 44, "y": 398, "width": 302, "height": 48},
+                {"x": 28, "y": 82, "width": 128, "height": 68},
+                {"x": 265, "y": 82, "width": 97, "height": 68},
+                {"x": 28, "y": 558, "width": 334, "height": 78},
+            ],
+            "heroClearAfter": True,
+            "strength": "7 of 10",
+        }
+
+    def attachments(self, tmp: Path, *, mutate=None):
+        files = {}
+        for context in self.CONTEXTS:
+            path = tmp / f"audit-summary-{context}.txt"
+            summary = {
+                "screen": context,
+                "auditTypes": ["hitRegion", "sufficientElementDescription", "textClipped", "contrast"],
+                "counts": {"reported": 0, "ignored": 0, "failed": 0},
+                "countsNote": "reported = ignored + failed",
+                "policy": {
+                    "substringExemptions": False,
+                    "coordinateExemptions": False,
+                    "enabledIssueSuppression": 0,
+                },
+                "issues": [],
+            }
+            if mutate:
+                mutate(context, summary)
+            path.write_text(json.dumps(summary), encoding="utf-8")
+            files[f"audit-summary-{context}"] = path
+        for context in self.CONTEXTS + ["editor-large-text-wind-clear", "editor-large-text-before-audit"]:
+            path = tmp / f"{context}.png"
+            path.write_bytes(b"\x89PNG\r\n\x1a\nrest")
+            files[context] = path
+        geometry = tmp / "audit-geometry-editor-large-text.txt"
+        geometry.write_text(json.dumps(self.geometry()), encoding="utf-8")
+        files["audit-geometry-editor-large-text"] = geometry
+        run_id = "access-light-AAAA"
+        journey = tmp / "journey.txt"
+        journey.write_text(f"runID: {run_id}\n", encoding="utf-8")
+        files["journey-access"] = journey
+        return {"root": tmp, "tests": {self.entry()["id"]: files}}
+
+    def validate(self, attachments, details):
+        return verify._validate_attachments_for_entry(self.entry(), attachments, details)
+
+    def test_valid_attachments_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            attachments = self.attachments(Path(tmp))
+            details = [{"id": self.entry()["id"], "runID": "access-light-AAAA"}]
+            self.assertEqual(self.validate(attachments, details), [])
+
+    def test_forged_counts_and_enabled_exemption_fail(self):
+        def forged(context, summary):
+            if context == "home-light":
+                summary["counts"] = {"reported": 2, "ignored": 1, "failed": 0}
+                summary["issues"] = [{
+                    "auditType": "contrast", "description": "x", "identifier": "x", "label": "x",
+                    "enabled": True, "ignored": True, "exemption": "disabled control",
+                }]
+        with tempfile.TemporaryDirectory() as tmp:
+            attachments = self.attachments(Path(tmp), mutate=forged)
+            errors = self.validate(attachments, [{"id": self.entry()["id"], "runID": "access-light-AAAA"}])
+        text = "\n".join(errors)
+        self.assertIn("may be ignored", text)
+        self.assertIn("reported", text)
+
+    def test_missing_context_is_not_silently_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            attachments = self.attachments(Path(tmp))
+            files = attachments["tests"][self.entry()["id"]]
+            files.pop("audit-summary-settings-dark")
+            errors = self.validate(attachments, [{"id": self.entry()["id"], "runID": "access-light-AAAA"}])
+        self.assertTrue(any("settings-dark" in error for error in errors), errors)
+
+    def test_geometry_mismatch_and_nonfinite_frames_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            attachments = self.attachments(Path(tmp))
+            path = attachments["tests"][self.entry()["id"]]["audit-geometry-editor-large-text"]
+            geometry = self.geometry()
+            geometry["after"][0]["y"] = 240
+            path.write_text(json.dumps(geometry), encoding="utf-8")
+            errors = self.validate(attachments, [{"id": self.entry()["id"], "runID": "access-light-AAAA"}])
+            self.assertTrue(any("frames differ" in error for error in errors), errors)
+            geometry = self.geometry()
+            geometry["before"][1]["height"] = float("inf")
+            path.write_text(json.dumps(geometry, allow_nan=True), encoding="utf-8")
+            errors = self.validate(attachments, [{"id": self.entry()["id"], "runID": "access-light-AAAA"}])
+            self.assertTrue(any("finite" in error or "malformed" in error for error in errors), errors)
+
+    def test_invalid_configuration_requires_messages_screenshots_and_no_runs(self):
+        entry = {
+            "name": "invalid",
+            "id": "QuietControlUITests/QuietControlUITests/testInvalidTestConfigurationFailsWithoutRadioFallback()",
+            "label": "ui-invalid",
+            "runs": [{"prefix": "invalid-", "evidence": "invalid-configuration", "expectedRuns": 0}],
+            "attachments": {"invalidConfiguration": True},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            files = {}
+            for name, text in {
+                "journey-invalid-run": "runID: invalid-AAAA run!\nQuietControl could not start\nQUIETCONTROL_TEST_RUN_ID must be 1-64 ASCII letters, digits or hyphens.",
+                "journey-invalid-scenario": "runID: invalid-BBBB\nQuietControl could not start\nUnsupported QUIETCONTROL_TEST_SCENARIO: not-a-scenario.",
+            }.items():
+                path = root / name
+                path.write_text(text, encoding="utf-8")
+                files[name] = path
+            for name in ("invalid-run-error", "invalid-scenario-error"):
+                path = root / name
+                path.write_bytes(b"\x89PNG\r\n\x1a\n")
+                files[name] = path
+            attachments = {"root": root, "tests": {entry["id"]: files}}
+            details = []
+            self.assertEqual(verify._validate_attachments_for_entry(entry, attachments, details), [])
+            errors, _ = verify.map_and_inspect_lane(
+                [entry], root, {"invalid-LEAK"}, SYNTHETIC, "ui-invalid"
+            )
+            self.assertTrue(any("created harness run directories" in error for error in errors), errors)
+            files["journey-invalid-run"].write_text("runID: invalid-AAAA\nno message\n", encoding="utf-8")
+            errors = verify._validate_attachments_for_entry(entry, attachments, details)
+            self.assertTrue(any("run-ID error message" in error for error in errors), errors)
