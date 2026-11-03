@@ -1,11 +1,26 @@
 import SwiftUI
 
+/// User-selectable accent. Light variants stay dark enough for white text and
+/// grouped-background contrast; dark variants are bright enough for black text.
+enum QCAccent: String, CaseIterable, Identifiable {
+    case teal, amber, violet
+    static let storageKey = "accentTheme"
+    var id: String { rawValue }
+    var name: String { rawValue.capitalized }
+    var color: Color {
+        let (dark, light): (UIColor, UIColor) = switch self {
+        case .teal: (UIColor(red: 0.34, green: 0.81, blue: 0.70, alpha: 1), UIColor(red: 0.08, green: 0.39, blue: 0.33, alpha: 1))
+        case .amber: (UIColor(red: 0.96, green: 0.71, blue: 0.32, alpha: 1), UIColor(red: 0.55, green: 0.33, blue: 0.02, alpha: 1))
+        case .violet: (UIColor(red: 0.69, green: 0.62, blue: 1.00, alpha: 1), UIColor(red: 0.38, green: 0.25, blue: 0.74, alpha: 1))
+        }
+        return Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? dark : light })
+    }
+    static var current: QCAccent { UserDefaults.standard.string(forKey: storageKey).flatMap(QCAccent.init) ?? .teal }
+}
+
 private enum QCTheme {
-    static let accent = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.34, green: 0.81, blue: 0.70, alpha: 1)
-            : UIColor(red: 0.08, green: 0.39, blue: 0.33, alpha: 1)
-    })
+    /// Read on every render; views that must refresh on change observe `QCAccent.storageKey` with `@AppStorage`.
+    static var accent: Color { QCAccent.current.color }
     static func battery(_ level: Int) -> Color {
         Color(uiColor: UIColor { traits in
             let dark = traits.userInterfaceStyle == .dark
@@ -33,6 +48,7 @@ struct QuietControlView: View {
     @ObservedObject var probe: BluetoothProbe
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @AppStorage(QCAccent.storageKey) private var accentTheme = QCAccent.teal.rawValue
     /// In UI-test mode the launch configuration supplies the accessibility size
     /// for descendants via `.environment`, but this root view's own environment
     /// still reports the system default. Mirror the same size here so the root
@@ -140,7 +156,7 @@ struct QuietControlView: View {
                     if scenePhase == .active && !showingInspection && !showingControlCheck && !showingDeviceCheck { await session.refresh() }
                 }
             }
-        }.tint(QCTheme.accent).modifier(QCFeedbackOverlay(session: session))
+        }.tint(QCAccent(rawValue: accentTheme)?.color ?? QCTheme.accent).modifier(QCFeedbackOverlay(session: session))
             .modifier(QCUITestPresentation(testMode: session.environment.isTestMode))
     }
 
@@ -217,20 +233,28 @@ struct QuietControlView: View {
         }.accessibilityLabel("Headphone settings")
     }
     private var headphoneBadge: some View {
-        Image(systemName: "headphones").font(.system(size: 23, weight: .light))
-            .foregroundStyle(QCTheme.accent).frame(width: 42, height: 42)
-            .background(QCTheme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+        QCHeadphoneGlyph(live: session.isConnected).frame(width: 30, height: 30)
+            .frame(width: 46, height: 46)
+            .background(QCTheme.accent.opacity(session.isConnected ? 0.14 : 0.07), in: RoundedRectangle(cornerRadius: 14))
+            .accessibilityHidden(true)
+    }
+    /// "2 hr. ago" while offline, so a cached screen says how stale it is.
+    private var lastSeenText: String? {
+        guard !session.isConnected, let date = session.lastConfirmedAt else { return nil }
+        return "seen " + date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
     }
     private var connectionLabel: some View {
         HStack(spacing: 6) {
             Circle().fill(session.isConnected ? Color.green : Color.secondary.opacity(0.6)).frame(width: 5, height: 5)
-            Text(session.connectionState.title).font(.caption).foregroundStyle(QCTheme.secondaryText)
+            Text([session.connectionState.title, lastSeenText].compactMap { $0 }.joined(separator: " · "))
+                .font(.caption).foregroundStyle(QCTheme.secondaryText).lineLimit(1).minimumScaleFactor(0.85)
             if session.connectionState == .connecting { ProgressView().controlSize(.mini).accessibilityIdentifier("connecting-spinner") }
         }.frame(minHeight: 20, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityIdentifier("connection-status")
             .accessibilityLabel(session.connectionState.title)
             .accessibilityValue(session.isConnected ? "Live" : "Offline")
+            .accessibilityHint(lastSeenText.map { "Last \($0)" } ?? "")
     }
     @ViewBuilder private var batteryBadge: some View {
         if session.isConnected, let battery = session.battery {
@@ -241,6 +265,15 @@ struct QuietControlView: View {
                 .fixedSize().accessibilityElement(children: .ignore)
                 .accessibilityIdentifier("battery-level")
                 .accessibilityLabel("Battery \(battery) percent")
+        } else if !session.isConnected, session.hasKnownProfile, let battery = session.battery {
+            // Cached reading: neutral colour so it never reads as a live level.
+            HStack(spacing: 4) {
+                BatteryLevelIcon(level: battery).frame(width: 22, height: 12)
+                Text("\(battery)%").font(.caption.monospacedDigit())
+            }.foregroundStyle(QCTheme.secondaryText).opacity(0.8)
+                .fixedSize().accessibilityElement(children: .ignore)
+                .accessibilityIdentifier("last-battery")
+                .accessibilityLabel("Last known battery \(battery) percent")
         }
     }
     private var setupPrompt: some View {
@@ -273,6 +306,14 @@ struct QuietControlView: View {
         return strength == 10 ? "Noise cancelling · Max" : strength == 0 ? "No noise cancelling" : "Noise cancelling · \(strength) of 10"
     }
 
+    /// Caption and headline for the mode card, e.g. ("Noise cancelling", "Max").
+    private func heroParts(_ mode: ListeningMode) -> (String, String) {
+        if mode.index == 1 { return ("Ambient sound", "Fully aware") }
+        if mode.index == 0 || mode.windBlock { return ("Noise cancelling", "Max") }
+        let strength = max(0, min(10, mode.ancStrength))
+        return ("Noise cancelling", strength == 10 ? "Max" : strength == 0 ? "Off" : "\(strength) of 10")
+    }
+
     private var listeningModes: some View {
         VStack(spacing: 8) {
             if let current = session.modes.first(where: { $0.index == session.mode }) { modeHero(current) }
@@ -287,14 +328,29 @@ struct QuietControlView: View {
     private func modeHero(_ mode: ListeningMode) -> some View {
         let live = session.isConnected
         let strength = mode.windBlock ? 10 : max(0, min(10, mode.ancStrength))
+        // The segmented control below already names the mode; the card states what it does.
+        let (kind, level) = heroParts(mode)
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(mode.displayName).font(.title.weight(.bold)).foregroundStyle(live ? .primary : QCTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .center, spacing: 8) {
+                Text(kind.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(QCTheme.secondaryText)
                 Spacer(minLength: 4)
-                Text(live ? "Hold to edit" : "Last used").font(.caption2).foregroundStyle(Color.primary)
+                if live {
+                    Image(systemName: "pencil").font(.footnote.weight(.semibold)).foregroundStyle(QCTheme.accent)
+                        .frame(width: 28, height: 28).background(QCTheme.accent.opacity(0.14), in: Circle())
+                } else {
+                    Text("Last used").font(.caption2).foregroundStyle(Color.primary)
+                }
             }
-            Text(modeDescription(mode)).font(.caption).foregroundStyle(Color.primary)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(level).font(.title.weight(.bold)).foregroundStyle(live ? .primary : QCTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                if mode.windBlock {
+                    Label("Wind Block", systemImage: "wind").font(.caption.weight(.semibold))
+                        .foregroundStyle(live ? QCTheme.accent : QCTheme.secondaryText)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background((live ? QCTheme.accent : Color.secondary).opacity(0.14), in: Capsule())
+                }
+            }
             HStack(spacing: 3) {
                 ForEach(0..<10, id: \.self) { step in
                     Capsule().fill(step < strength ? (live ? QCTheme.accent : Color.secondary.opacity(0.55)) : Color.primary.opacity(0.10))
@@ -307,11 +363,14 @@ struct QuietControlView: View {
                                    startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 20))
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
         .contentShape(RoundedRectangle(cornerRadius: 20))
-        .onLongPressGesture(minimumDuration: 0.5) { openModeEditor(mode.index) }
+        .onTapGesture { openModeEditor(mode.index) }
         .accessibilityElement(children: .ignore)
         .accessibilityIdentifier("current-mode")
         .accessibilityLabel(live ? "Current mode, \(mode.displayName)" : "Last used mode, \(mode.displayName)")
         .accessibilityValue(modeDescription(mode))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(live ? "Opens the mode editor" : "Shows this mode's settings")
+        .accessibilityAction { openModeEditor(mode.index) }
         .accessibilityAction(named: "Edit mode") { openModeEditor(mode.index) }
     }
     private func modeSegment(_ mode: ListeningMode) -> some View {
@@ -400,7 +459,13 @@ struct QuietControlView: View {
                     .font(.subheadline).foregroundStyle(QCTheme.secondaryText).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(14).zenCard()
             } else {
-                if let phone = phoneDevice { deviceRow(phone).padding(.horizontal, 12).zenCard() }
+                if !(session.isConnected && session.hasLiveDeviceList) {
+                    // One explanation instead of "Unavailable" on every row.
+                    Text(session.isConnected ? "Loading devices…" : "Turn on your QC to switch devices.")
+                        .font(.caption).foregroundStyle(QCTheme.secondaryText)
+                        .padding(.horizontal, 6).accessibilityIdentifier("devices-offline-note")
+                }
+                if let phone = phoneDevice { deviceRow(phone, home: true).padding(.horizontal, 12).zenCard() }
                 if !otherDevices.isEmpty {
                     if phoneDevice != nil {
                         Text("OTHER DEVICES").font(.caption2.weight(.semibold)).foregroundStyle(QCTheme.secondaryText)
@@ -454,7 +519,7 @@ struct QuietControlView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(device.name).font(.subheadline).foregroundStyle(current ? .primary : QCTheme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(status).font(.caption2).foregroundStyle(active ? QCTheme.accent : QCTheme.secondaryText)
+                    if current { Text(status).font(.caption2).foregroundStyle(active ? QCTheme.accent : QCTheme.secondaryText) }
                 }
                 Spacer(minLength: 4)
                 Group {
@@ -503,22 +568,36 @@ struct QuietControlView: View {
         } label: { Image(systemName: "ellipsis").font(.body).frame(width: 44, height: 44).contentShape(Rectangle()) }
             .accessibilityLabel("Device actions").accessibilityIdentifier("device-actions")
     }
-    private func deviceRow(_ device: PairedAudioDevice) -> some View {
+    /// `home` swaps the connection toggle for the same status icons as the other rows:
+    /// a bright switch that can drop this phone's own audio is too easy to hit on Home.
+    /// Disconnecting stays one long press away; the All devices list keeps the toggle.
+    private func deviceRow(_ device: PairedAudioDevice, home: Bool = false) -> some View {
         let current = session.isConnected && session.hasLiveDeviceList
+        let active = current && device.isConnected && device.address == session.activeAudioAddress
         return HStack(spacing: 12) {
             Image(systemName: deviceIcon(device))
                 .font(.system(size: 22, weight: .regular)).foregroundStyle(current && device.isConnected ? QCTheme.accent : .secondary).frame(width: 30)
             VStack(alignment: .leading, spacing: 2) {
                 Text(device.name).font(.subheadline).fixedSize(horizontal: false, vertical: true)
                 Text(deviceStatus(device, current: current))
-                    .font(.caption2).foregroundStyle(QCTheme.secondaryText)
+                    .font(.caption2).foregroundStyle(active && home ? QCTheme.accent : QCTheme.secondaryText)
                 if current && device.isConnected && device.address != session.activeAudioAddress && session.routingVerified {
                     Button("Use audio") { Task { await session.useAudioDevice(device.address) } }.font(.caption).disabled(!canManage)
                 }
             }
             Spacer(minLength: 4)
             if session.pendingDevice == device.address { ProgressView().controlSize(.mini) }
-            if current {
+            if home {
+                Group {
+                    if !current { EmptyView() }
+                    else if active { Image(systemName: "waveform").foregroundStyle(QCTheme.accent) }
+                    else if device.isConnected { Image(systemName: "checkmark.circle.fill").foregroundStyle(QCTheme.accent) }
+                    else {
+                        Button("Connect") { selectDevice(device) }.font(.caption.weight(.semibold))
+                            .buttonStyle(.bordered).controlSize(.small).disabled(!canManage)
+                    }
+                }.font(.body).accessibilityHidden(!current)
+            } else if current {
                 Toggle("Connect \(device.name)", isOn: Binding(get: { device.isConnected }, set: { value in
                     if value {
                         let plan = try? DeviceConnectionPlanner.plan(target: device.address, devices: session.devices, multipoint: session.multipoint == true)
@@ -531,15 +610,27 @@ struct QuietControlView: View {
                     .accessibilityLabel("Connection unavailable")
             }
         }.frame(minHeight: 54).padding(.vertical, 2)
+            .contextMenu {
+                if home && current && device.isConnected {
+                    Button("Disconnect", systemImage: "link", role: .destructive) { Task { await session.disconnectAudioDevice(device.address) } }
+                        .disabled(!canManage)
+                }
+            }
     }
     private func deviceStatus(_ device: PairedAudioDevice, current: Bool) -> String {
+        if !current && device.address == phoneDevice?.address { return "This iPhone" }
         let state = !current ? "Unavailable" : device.isConnected && device.address == session.activeAudioAddress ? "Active audio"
             : device.isConnected ? "Connected" : device.isController ? "Controls only" : "Disconnected"
         return device.address == phoneDevice?.address ? "This iPhone · \(state)" : state
     }
     private func deviceIcon(_ device: PairedAudioDevice) -> String {
         let name = device.name.lowercased()
+        let words = Set(name.split { !$0.isLetter && !$0.isNumber }.map(String.init))
         if device.address == session.controllerAddress || name.contains("iphone") || name.contains("phone") { return "iphone" }
+        if words.contains("tv") || name.contains("television") || name.contains("bravia") { return "tv" }
+        if !words.isDisjoint(with: ["playstation", "xbox", "ps4", "ps5"]) { return "gamecontroller" }
+        if name.contains("speaker") || name.contains("homepod") || name.contains("soundbar") { return "hifispeaker" }
+        if name.contains("watch") { return "applewatch" }
         if name.contains("ipad") || name.contains("tablet") { return "ipad" }
         if name.contains("desktop") || name.contains("imac") || name.contains("mac mini") { return "desktopcomputer" }
         if name.contains("laptop") || name.contains("macbook") || name.contains("notebook") { return "laptopcomputer" }
@@ -1199,6 +1290,7 @@ private struct HeadphoneSettingsView: View {
     @State private var showingConnection = false
     @State private var confirmingMultipointOff = false
     @State private var showingDiagnostics = false
+    @AppStorage(QCAccent.storageKey) private var accentTheme = QCAccent.teal.rawValue
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private var selfVoice: String {
         guard let data = session.preferencePackets["selfVoice"], data.count >= 2 else { return "Not read" }
@@ -1232,7 +1324,7 @@ private struct HeadphoneSettingsView: View {
                             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
                             : AnyLayout(HStackLayout(spacing: 14))
                         layout {
-                            Image(systemName: "headphones").font(.system(size: 24, weight: .light)).foregroundStyle(QCTheme.accent)
+                            QCHeadphoneGlyph().frame(width: 30, height: 30)
                                 .frame(width: 48, height: 48).background(QCTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Bose QuietComfort").font(.headline).foregroundStyle(.primary)
@@ -1320,6 +1412,24 @@ private struct HeadphoneSettingsView: View {
                         Text("Checks Self Voice and the button shortcut, then restores their original values.").font(.footnote).foregroundStyle(QCTheme.secondaryText)
                     }
                 }
+                Section {
+                    HStack(spacing: 10) {
+                        ForEach(QCAccent.allCases) { accent in
+                            let selected = accentTheme == accent.rawValue
+                            Button { accentTheme = accent.rawValue } label: {
+                                VStack(spacing: 6) {
+                                    Circle().fill(accent.color).frame(width: 28, height: 28)
+                                        .overlay { if selected { Image(systemName: "checkmark").font(.caption.weight(.bold)).foregroundStyle(QCTheme.onAccent) } }
+                                    Text(accent.name).font(.caption).foregroundStyle(selected ? .primary : QCTheme.secondaryText)
+                                }.frame(maxWidth: .infinity, minHeight: 60)
+                                    .background(selected ? accent.color.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 12))
+                                    .contentShape(RoundedRectangle(cornerRadius: 12))
+                            }.buttonStyle(.plain)
+                                .accessibilityLabel(accent.name).accessibilityAddTraits(selected ? .isSelected : [])
+                                .accessibilityIdentifier("accent-\(accent.rawValue)")
+                        }
+                    }.padding(.vertical, 2)
+                } header: { Text("Accent colour").foregroundStyle(QCTheme.secondaryText) }
                 Section("Connection") {
                     if let multi = session.multipoint {
                         Toggle(isOn: Binding(get: { session.multipoint ?? multi }, set: { value in
@@ -1405,7 +1515,7 @@ private struct HeadphoneSettingsView: View {
                 .sheet(isPresented: $showingModeCheck) { ControlCheckView(session: session, probe: probe) }
                 .sheet(isPresented: $showingDeviceCheck) { DeviceCheckView(session: session) }
                 .sheet(isPresented: $showingConnection) { ConnectionDetailsView(session: session) }
-        }.tint(QCTheme.accent).modifier(QCFeedbackOverlay(session: session))
+        }.tint(QCAccent(rawValue: accentTheme)?.color ?? QCTheme.accent).modifier(QCFeedbackOverlay(session: session))
     }
 }
 
@@ -1431,6 +1541,28 @@ private extension HeadphoneSettingsView {
 
 private extension String {
     func ifEmpty(_ fallback: String) -> String { isEmpty ? fallback : self }
+}
+
+/// Our own over-ear outline (slim band, oval cups) in place of the generic SF Symbol.
+private struct QCHeadphoneGlyph: View {
+    var live = true
+    var body: some View {
+        let tint = live ? QCTheme.accent : QCTheme.secondaryText
+        Canvas { context, size in
+            let w = size.width, h = size.height, line = w * 0.075
+            var band = Path()
+            band.addArc(center: CGPoint(x: w / 2, y: h * 0.54), radius: w * 0.36, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
+            context.stroke(band, with: .color(tint), style: StrokeStyle(lineWidth: line, lineCap: .round))
+            var cushion = Path()
+            cushion.addArc(center: CGPoint(x: w / 2, y: h * 0.54), radius: w * 0.27, startAngle: .degrees(205), endAngle: .degrees(335), clockwise: false)
+            context.stroke(cushion, with: .color(tint.opacity(0.45)), style: StrokeStyle(lineWidth: line * 0.6, lineCap: .round))
+            for x in [w * 0.05, w * 0.73] {
+                let cup = Path(roundedRect: CGRect(x: x, y: h * 0.47, width: w * 0.22, height: h * 0.44), cornerRadius: w * 0.11)
+                context.fill(cup, with: .color(tint.opacity(0.28)))
+                context.stroke(cup, with: .color(tint), lineWidth: line * 0.85)
+            }
+        }
+    }
 }
 
 private struct BatteryLevelIcon: View {
