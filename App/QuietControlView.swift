@@ -897,7 +897,8 @@ private struct InteractiveEQCurve: View {
                         .accessibilityValue("\(values[index])")
                         .accessibilityAdjustableAction { direction in
                             guard enabled else { return }
-                            let next = max(-10, min(10, values[index] + (direction == .increment ? 1 : -1)))
+                            let step: Int = direction == .increment ? 1 : -1
+                            let next = max(-10, min(10, values[index] + step))
                             preview(index, next); commit(index)
                         }
                 }
