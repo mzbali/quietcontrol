@@ -980,7 +980,8 @@ private struct InteractiveEQCurve: View {
                         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("eqCurve"))
                             .onChanged { value in
                                 guard enabled, activeBand == nil || activeBand == index else { return }
-                                preview(index, max(-10, min(10, Int(((center - value.location.y) / scale).rounded()))))
+                                let raw: CGFloat = (center - value.location.y) / scale
+                                preview(index, max(-10, min(10, Int(raw.rounded()))))
                             }.onEnded { _ in if activeBand == index { commit(index) } })
                         .accessibilityElement(children: .ignore)
                         .accessibilityIdentifier("eq-point-\(index)")
