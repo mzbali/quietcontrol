@@ -10,6 +10,8 @@
   phone, require `./scripts/verify.sh preinstall` to pass for the source being
   installed. A passing gate makes the build eligible for an already-authorized
   installation; it does not itself authorize installing or deploying anything.
+- CI runs `core`, `session` and every UI journey except `access` on each PR, so
+  don't run those lanes on the Mac just to open a PR; let CI do it.
 - The user's target is iOS 27; acceptance has run on iOS 27.1. The app's iOS 17
   deployment minimum is a separate compatibility concern, not the requested phone
   target. Report the actual runtime used and any unavailable coverage honestly.
