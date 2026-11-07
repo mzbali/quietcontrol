@@ -247,7 +247,7 @@ struct QuietControlView: View {
         HStack(spacing: 6) {
             Circle().fill(session.isConnected ? Color.green : Color.secondary.opacity(0.6)).frame(width: 5, height: 5)
             Text([session.connectionState.title, lastSeenText].compactMap { $0 }.joined(separator: " · "))
-                .font(.caption).foregroundStyle(QCTheme.secondaryText).lineLimit(1).minimumScaleFactor(0.85)
+                .font(.caption).foregroundStyle(QCTheme.secondaryText).fixedSize(horizontal: false, vertical: true)
             if session.connectionState == .connecting { ProgressView().controlSize(.mini).accessibilityIdentifier("connecting-spinner") }
         }.frame(minHeight: 20, alignment: .leading)
             .accessibilityElement(children: .ignore)
@@ -1546,8 +1546,10 @@ private extension String {
 /// Our own over-ear outline (slim band, oval cups) in place of the generic SF Symbol.
 private struct QCHeadphoneGlyph: View {
     var live = true
+    /// Without this dependency SwiftUI keeps the old colour after the accent changes.
+    @AppStorage(QCAccent.storageKey) private var accentTheme = QCAccent.teal.rawValue
     var body: some View {
-        let tint = live ? QCTheme.accent : QCTheme.secondaryText
+        let tint = live ? (QCAccent(rawValue: accentTheme) ?? .teal).color : QCTheme.secondaryText
         Canvas { context, size in
             let w = size.width, h = size.height, line = w * 0.075
             var band = Path()
