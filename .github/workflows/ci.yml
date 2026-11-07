@@ -11,20 +11,30 @@ concurrency:
 
 jobs:
   verify:
-    name: ${{ matrix.lane }}
+    name: ${{ matrix.name }}
     runs-on: macos-26
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        lane: [core, session, ui]
+        # The `access` journey (large-text audit) never settles on the runner's iOS 26
+        # simulators, so it runs only in the local `preinstall` gate on iOS 27.
+        include:
+          - name: core
+            args: core
+          - name: session
+            args: session
+          - name: ui-1
+            args: ui --only modes --only mode-rejected --only mode-unconfirmed --only offline --only eq --only eqfail --only presets --only editor
+          - name: ui-2
+            args: ui --only swap --only unreachable --only settings --only firmware --only waiting --only firstrun --only invalid --only probe
     steps:
       - uses: actions/checkout@v5
       - run: xcodebuild -version && xcrun simctl list runtimes available
-      - run: ./scripts/verify.sh ${{ matrix.lane }}
+      - run: ./scripts/verify.sh ${{ matrix.args }}
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: verification-${{ matrix.lane }}
+          name: verification-${{ matrix.name }}
           path: build/Verification/
           if-no-files-found: ignore
