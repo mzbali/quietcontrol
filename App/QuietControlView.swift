@@ -243,7 +243,11 @@ struct QuietControlView: View {
         guard !session.isConnected, let date = session.lastConfirmedAt else { return nil }
         return "seen " + date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
     }
+    /// Redraws on a timer while offline so the relative "seen" time keeps advancing.
     private var connectionLabel: some View {
+        TimelineView(.periodic(from: .now, by: lastSeenText == nil ? 3600 : 15)) { _ in connectionLabelContent }
+    }
+    private var connectionLabelContent: some View {
         HStack(spacing: 6) {
             Circle().fill(session.isConnected ? Color.green : Color.secondary.opacity(0.6)).frame(width: 5, height: 5)
             Text([session.connectionState.title, lastSeenText].compactMap { $0 }.joined(separator: " · "))
