@@ -139,8 +139,9 @@ run's `xcresult` and summary; no second attempt is made.
 
 ## Simulator lifecycle
 
-The runner reads installed runtimes, prefers `iPhone Duo` on `iOS 27.1` (then the
-highest installed iOS runtime compatible with the manifest), creates a uniquely
+The runner reads installed runtimes, prefers `iPhone Duo` on `iOS 27.1` when installed
+(otherwise the highest installed iOS runtime compatible with the manifest, such as
+`iPhone 17` on iOS 26.4), creates a uniquely
 named simulator, boots it, builds-for-testing once into a per-run DerivedData path,
 enumerates, and runs `test-without-building` selections on that UUID. It never uses
 a pre-existing booted device, a `booted` alias, a physical device, or provisioning.
@@ -244,7 +245,8 @@ before a simulator is created. A new UI or session test must be added to the man
 
 ## Coverage and physical limits
 
-Only the installed simulator matrix can run. Today that is `iPhone Duo` on iOS 27.1.
+Only the installed simulator matrix can run. Today that is iOS 26.4 (iPhone 17 family); the iOS 27.1 runtime
+and iPhone Duo were removed from this Mac on 2026-11-14.
 When the minimum-OS runtime (iOS 17) or a compact device type is not installed, the
 run prints and records explicit `BLOCKED` coverage entries; this is reported as absent
 coverage, not as a pass and not as a reason to fail the available-device lane.

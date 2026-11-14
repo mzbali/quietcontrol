@@ -35,7 +35,8 @@
   requested acceptance, with a bounded session coordinated with the user.
 - User target: iOS 27; simulator acceptance used iOS 27.1. The app's iOS 17 minimum
   is a separate compatibility limit. Do not present hardware behavior as proven.
-- Available baseline: Xcode 27.1, iOS 27.1 iPhone Duo runtime. Create a dedicated
+- Available baseline: Xcode 27.1, iOS 26.4 runtime (iPhone 17 family; the iOS 27.1
+  iPhone Duo runtime was removed on 2026-11-14). Create a dedicated
   simulator; leave the existing booted simulator and unrelated apps untouched.
 - Preserve: release/device paths; existing preview/render flags; confirmed-only
   device/EQ state; serial IO; one pending reconnect; capability/firmware gates;
