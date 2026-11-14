@@ -1316,7 +1316,7 @@ private struct HeadphoneSettingsView: View {
         return Self.autoOffChoices.first { $0.0 == data[0] }?.1 ?? "Unavailable"
     }
     private var rememberMode: Bool { session.preferencePackets["rememberMode"] == Data([1]) }
-    private func enabled(_ name: String) -> Bool { session.isConnected && (session.verifiedPreferences.contains(name) || name == "voicePrompts") && !session.controlsBusy && session.preferencePackets[name] != nil }
+    private func enabled(_ name: String) -> Bool { session.canWritePreference(name) }
     private static let autoOffShort: [UInt8: String] = [5: "5m", 20: "20m", 40: "40m", 60: "1h", 180: "3h", 0: "Never"]
     private var autoOffValue: UInt8? { session.preferencePackets["autoOff"].flatMap { $0.count == 1 ? $0[0] : nil } }
     private var identity: String {
@@ -1445,7 +1445,7 @@ private struct HeadphoneSettingsView: View {
                             if !value && session.devices.filter(\.isConnected).count > 1 { confirmingMultipointOff = true }
                             else { Task { await session.setMultipointEnabled(value) } }
                         })) { settingLabel("Multipoint", symbol: "rectangle.on.rectangle", tint: .gray, detail: "Two devices connected at once") }
-                            .disabled(!session.isConnected || !session.multipointVerified || session.controlsBusy)
+                            .disabled(!session.isConnected || !session.hasVerifiedDirectControl || !session.multipointVerified || session.controlsBusy)
                     }
                     Toggle(isOn: Binding(get: { session.autoConnectEnabled }, set: { value in
                         if value { session.resumeAutoConnect() } else { session.disconnect() }

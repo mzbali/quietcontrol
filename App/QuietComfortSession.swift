@@ -1078,9 +1078,13 @@ final class QuietComfortSession: NSObject, ObservableObject {
         guard try preferenceWritePayload(name, from: current) == payload else { throw QCSessionError.unexpected("The QC did not confirm this setting.") }
         preferencePackets[name] = current
     }
+    /// The one rule for whether a headphone setting accepts a write; the Settings controls
+    /// use it for `.disabled`, so they are enabled exactly when `setPreference` will act.
+    func canWritePreference(_ name: String) -> Bool {
+        isConnected && verifiedPreferences.contains(name) && !controlsBusy && preferencePackets[name] != nil
+    }
     func setPreference(_ name: String, value: UInt8) async {
-        guard isConnected, verifiedPreferences.contains(name), !controlsBusy,
-              preferencePackets[name] != nil else { return }
+        guard canWritePreference(name) else { return }
         await performUserCommand(notify: true, feedback: QCFeedback(text: "Setting saved", symbol: "slider.horizontal.3")) {
             let (block, function) = self.preferenceLocation(name)
             let frame = try await self.request(BMAPFrame(block: block, function: function, operation: .get))[0]
