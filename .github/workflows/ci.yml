@@ -10,9 +10,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Docs-only changes skip the simulator suites. The verify jobs still run (and pass) so the
+  # required checks report; only their steps are skipped.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$BASE" HEAD)
+          printf '%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -qvE '(^docs/|\.md$|^LICENSE$|^$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   verify:
     name: ${{ matrix.name }}
-    runs-on: macos-26
+    needs: changes
+    runs-on: ${{ needs.changes.outputs.code == 'true' && 'macos-26' || 'ubuntu-latest' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -29,9 +55,14 @@ jobs:
           - name: ui-2
             args: ui --only swap --only unreachable --only settings --only firmware --only waiting --only firstrun --only invalid --only probe
     steps:
-      - uses: actions/checkout@v5
-      - run: xcodebuild -version && xcrun simctl list runtimes available
-      - run: ./scripts/verify.sh ${{ matrix.args }}
+      - if: needs.changes.outputs.code == 'false'
+        run: echo "Docs-only change; simulator suites skipped."
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@v5
+      - if: needs.changes.outputs.code == 'true'
+        run: xcodebuild -version && xcrun simctl list runtimes available
+      - if: needs.changes.outputs.code == 'true'
+        run: ./scripts/verify.sh ${{ matrix.args }}
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
