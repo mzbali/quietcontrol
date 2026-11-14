@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Docs-only changes skip the simulator suites. The verify jobs still run (and pass) so the
+  # Prose-only changes (Markdown, LICENSE) skip the simulator suites. The verify jobs still run (and pass) so the
   # required checks report; only their steps are skipped.
   changes:
     runs-on: ubuntu-latest
@@ -31,7 +31,8 @@ jobs:
           while IFS= read -r file; do
             echo "$file"
             case "$file" in
-              docs/* | *.md | LICENSE | "") ;;
+              # Only prose: docs/testing/journeys.json is the runner's manifest, so it runs everything.
+              *.md | LICENSE | "") ;;
               *) code=true ;;
             esac
           done < <(git diff --name-only "$BASE" HEAD)
