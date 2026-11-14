@@ -42,6 +42,14 @@ final class QuietControlUITests: XCTestCase {
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
+    /// A mode button shows "Selected" before connection setup finishes; the app ignores taps until
+    /// the control reports itself enabled, so wait for that instead of tapping a busy session.
+    private func tapWhenEnabled(_ element: XCUIElement, timeout: TimeInterval = QuietControlUITests.elementTimeout) {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: element)
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation], timeout: timeout), .completed, "\(element) never became ready for a tap.")
+        element.tap()
+    }
+
     private func openDiagnostics(_ app: XCUIApplication) {
         app.buttons["Headphone settings"].tap()
         app.buttons["More"].tap()
@@ -405,7 +413,7 @@ final class QuietControlUITests: XCTestCase {
         XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
         XCTAssertTrue(app.buttons["mode-1"].exists)
 
-        app.buttons["mode-1"].tap()
+        tapWhenEnabled(app.buttons["mode-1"])
         XCTAssertTrue(waitForValue(app.buttons["mode-1"], quietValue), "Aware must be selected after the confirmed write.")
         XCTAssertNotEqual(app.buttons["mode-0"].value as? String, quietValue)
 
@@ -422,7 +430,7 @@ final class QuietControlUITests: XCTestCase {
         let app = launch(runID: runID, scenario: "mode-rejected", reset: true)
         XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
 
-        app.buttons["mode-1"].tap()
+        tapWhenEnabled(app.buttons["mode-1"])
         let failureText = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "rejected")).firstMatch
         XCTAssertTrue(failureText.waitForExistence(timeout: 10), "A rejection must be shown to the user.")
         XCTAssertEqual(app.buttons["mode-0"].value as? String, quietValue)
@@ -439,7 +447,7 @@ final class QuietControlUITests: XCTestCase {
         let app = launch(runID: runID, scenario: "mode-unconfirmed", reset: true)
         XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
 
-        app.buttons["mode-1"].tap()
+        tapWhenEnabled(app.buttons["mode-1"])
         let failureText = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "did not confirm")).firstMatch
         XCTAssertTrue(failureText.waitForExistence(timeout: 15), "An unconfirmed write must be shown as a failure.")
         XCTAssertEqual(app.buttons["mode-0"].value as? String, quietValue)
@@ -455,7 +463,7 @@ final class QuietControlUITests: XCTestCase {
         let runID = "persist-\(UUID().uuidString.prefix(8))"
         let app = launch(runID: runID, scenario: "connected", reset: true)
         XCTAssertTrue(waitForValue(app.buttons["mode-0"], quietValue))
-        app.buttons["mode-1"].tap()
+        tapWhenEnabled(app.buttons["mode-1"])
         XCTAssertTrue(waitForValue(app.buttons["mode-1"], quietValue))
         app.terminate()
 

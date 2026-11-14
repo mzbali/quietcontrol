@@ -422,6 +422,10 @@ struct QuietControlView: View {
         .accessibilityHint("Tap to switch. Hold to view or edit this mode.")
         .accessibilityAction { switchMode(index) }
         .accessibilityAction(named: "Edit mode") { openModeEditor(index) }
+        // The mode shows as Selected as soon as it is read, but connection setup (device list,
+        // recovery) keeps the session busy for a few more seconds and switchMode drops taps then.
+        // Report that honestly, so neither a user nor a test acts on a control that is not ready.
+        .disabled(!canControl)
     }
     private func switchMode(_ index: UInt8) {
         guard canControl else { return }
