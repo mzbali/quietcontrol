@@ -28,11 +28,15 @@ final class QuietControlUITests: XCTestCase {
         return app
     }
 
+    /// CI's simulators can take 15 s just to find an element after launch; a wait returns as soon
+    /// as its condition holds, so only a real failure pays for the longer limit.
+    private static let elementTimeout: TimeInterval = 30
+
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
-    private func waitForValue(_ element: XCUIElement, _ value: String, timeout: TimeInterval = 15) -> Bool {
+    private func waitForValue(_ element: XCUIElement, _ value: String, timeout: TimeInterval = Self.elementTimeout) -> Bool {
         let predicate = NSPredicate(format: "value == %@", value)
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
@@ -52,17 +56,17 @@ final class QuietControlUITests: XCTestCase {
 
     // MARK: - Wave 2 helpers
 
-    private func waitForLabel(_ element: XCUIElement, _ label: String, timeout: TimeInterval = 15) -> Bool {
+    private func waitForLabel(_ element: XCUIElement, _ label: String, timeout: TimeInterval = Self.elementTimeout) -> Bool {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", label), object: element)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
-    private func waitForLabelContains(_ element: XCUIElement, _ text: String, timeout: TimeInterval = 15) -> Bool {
+    private func waitForLabelContains(_ element: XCUIElement, _ text: String, timeout: TimeInterval = Self.elementTimeout) -> Bool {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", text), object: element)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
-    private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval = 15) -> Bool {
+    private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval = Self.elementTimeout) -> Bool {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: element)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
