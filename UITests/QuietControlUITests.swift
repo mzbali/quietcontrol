@@ -36,7 +36,7 @@ final class QuietControlUITests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
-    private func waitForValue(_ element: XCUIElement, _ value: String, timeout: TimeInterval = Self.elementTimeout) -> Bool {
+    private func waitForValue(_ element: XCUIElement, _ value: String, timeout: TimeInterval = QuietControlUITests.elementTimeout) -> Bool {
         let predicate = NSPredicate(format: "value == %@", value)
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
@@ -56,17 +56,17 @@ final class QuietControlUITests: XCTestCase {
 
     // MARK: - Wave 2 helpers
 
-    private func waitForLabel(_ element: XCUIElement, _ label: String, timeout: TimeInterval = Self.elementTimeout) -> Bool {
+    private func waitForLabel(_ element: XCUIElement, _ label: String, timeout: TimeInterval = QuietControlUITests.elementTimeout) -> Bool {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", label), object: element)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
-    private func waitForLabelContains(_ element: XCUIElement, _ text: String, timeout: TimeInterval = Self.elementTimeout) -> Bool {
+    private func waitForLabelContains(_ element: XCUIElement, _ text: String, timeout: TimeInterval = QuietControlUITests.elementTimeout) -> Bool {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", text), object: element)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
-    private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval = Self.elementTimeout) -> Bool {
+    private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval = QuietControlUITests.elementTimeout) -> Bool {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: element)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
