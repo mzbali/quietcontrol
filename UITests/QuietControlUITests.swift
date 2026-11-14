@@ -44,9 +44,9 @@ final class QuietControlUITests: XCTestCase {
 
     /// A mode button shows "Selected" before connection setup finishes; the app ignores taps until
     /// the control reports itself enabled, so wait for that instead of tapping a busy session.
-    private func tapWhenEnabled(_ element: XCUIElement) {
+    private func tapWhenEnabled(_ element: XCUIElement, at offset: CGVector? = nil) {
         XCTAssertTrue(waitForEnabled(element), "\(element) never became ready for a tap.")
-        element.tap()
+        if let offset { element.coordinate(withNormalizedOffset: offset).tap() } else { element.tap() }
     }
 
     private func openDiagnostics(_ app: XCUIApplication) {
@@ -744,21 +744,18 @@ final class QuietControlUITests: XCTestCase {
 
         let autoOff = element("auto-off-value", in: app)
         XCTAssertTrue(waitForLabel(autoOff, "Never", timeout: 15), "The fixture starts with Auto-Off Never")
-        XCTAssertTrue(waitForEnabled(element("auto-off-20", in: app)))
-        element("auto-off-20", in: app).tap()
+        tapWhenEnabled(element("auto-off-20", in: app))
         XCTAssertTrue(waitForLabel(autoOff, "20 minutes"))
-        XCTAssertTrue(waitForEnabled(element("auto-off-0", in: app)))
-        element("auto-off-0", in: app).tap()
+        tapWhenEnabled(element("auto-off-0", in: app))
         XCTAssertTrue(waitForLabel(autoOff, "Never"))
 
         let remember = app.switches["remember-mode"]
         XCTAssertTrue(remember.waitForExistence(timeout: 10))
-        XCTAssertTrue(waitUntilEnabled(remember), "Power controls settle after the Auto-Off writes")
+        XCTAssertTrue(waitForEnabled(remember), "Power controls settle after the Auto-Off writes")
         XCTAssertEqual(remember.value as? String, "1")
-        remember.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        tapWhenEnabled(remember, at: CGVector(dx: 0.92, dy: 0.5))
         XCTAssertTrue(waitForValue(remember, "0"), "Remember My Mode turns off")
-        XCTAssertTrue(waitUntilEnabled(remember))
-        remember.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        tapWhenEnabled(remember, at: CGVector(dx: 0.92, dy: 0.5))
         XCTAssertTrue(waitForValue(remember, "1"), "Remember My Mode turns back on")
 
         let more = app.buttons["More"]
