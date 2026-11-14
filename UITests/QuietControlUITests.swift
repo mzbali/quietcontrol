@@ -477,6 +477,12 @@ final class QuietControlUITests: XCTestCase {
 
         relaunched.buttons["mode-0"].tap()
         XCTAssertTrue(hero.label.contains("Aware"), "An offline tap must not change the cached mode.")
+
+        // Holding a mode offline still opens its saved settings read-only.
+        XCTAssertTrue(relaunched.buttons["mode-0"].isEnabled, "Offline modes stay inspectable.")
+        relaunched.buttons["mode-0"].press(forDuration: 0.8)
+        let readOnly = relaunched.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Reconnect to edit")).firstMatch
+        XCTAssertTrue(readOnly.waitForExistence(timeout: 15), "Holding an offline mode opens it read-only.")
     }
 
     // MARK: - Wave 2 journeys
