@@ -44,9 +44,8 @@ final class QuietControlUITests: XCTestCase {
 
     /// A mode button shows "Selected" before connection setup finishes; the app ignores taps until
     /// the control reports itself enabled, so wait for that instead of tapping a busy session.
-    private func tapWhenEnabled(_ element: XCUIElement, timeout: TimeInterval = QuietControlUITests.elementTimeout) {
-        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: element)
-        XCTAssertEqual(XCTWaiter().wait(for: [expectation], timeout: timeout), .completed, "\(element) never became ready for a tap.")
+    private func tapWhenEnabled(_ element: XCUIElement) {
+        XCTAssertTrue(waitForEnabled(element), "\(element) never became ready for a tap.")
         element.tap()
     }
 
