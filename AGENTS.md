@@ -38,6 +38,7 @@
 ## Shell and Git
 
 - Prefer `rg` over `grep` and `fd` over `find`.
+- A tracked pre-push hook compiles the app and UI tests (`xcodebuild build-for-testing`) before a push; enable it once per clone with `git config core.hooksPath .githooks`.
 - Never add AI attribution to commits, PRs or code.
 
 ## Thread hygiene
