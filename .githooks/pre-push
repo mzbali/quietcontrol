@@ -38,7 +38,7 @@ if xcodebuild build-for-testing -project QuietControl.xcodeproj -scheme QuietCon
     CODE_SIGNING_ALLOWED=NO -quiet >"$log" 2>&1; then
   rm -f "$log"
 else
-  grep -E "error:" "$log" | sort -u >&2 || true
+  grep -E "^/.*error:" "$log" | sort -u >&2 || true
   echo "pre-push: build failed, push aborted (full log: $log)" >&2
   exit 1
 fi
