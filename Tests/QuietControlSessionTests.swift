@@ -552,8 +552,15 @@ final class QuietControlSessionTests: XCTestCase {
         let baseline = try XCTUnwrap(savedSnapshot(session.environment))
 
         simulator.faults.arm(.malformedEnvelope, block: 2, function: 2, operation: .get)
+        // Time from the injected envelope, not from the start of refresh(): the reads before it took up
+        // to 5 s on slow CI runners (PR #17 session job, 19 Nov) though the framing error itself failed at once.
+        let refresh = Task { await session.refresh() }
+        let injected = await waitUntil(timeout: 20) {
+            session.testTranscript?.contains("Injecting a malformed Bose envelope") == true
+        }
+        XCTAssertTrue(injected, "The fixture injected the malformed envelope")
         let started = Date()
-        await session.refresh()
+        await refresh.value
         let elapsed = Date().timeIntervalSince(started)
 
         XCTAssertFalse(session.isConnected, "A framing error must invalidate the link")
