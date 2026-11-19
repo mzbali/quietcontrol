@@ -1,0 +1,52 @@
+#!/bin/sh
+# Fails a push on the compile errors that would fail CI's build-for-testing step, in about a minute
+# instead of a CI round. Incident: 14 Nov, branch test/ui-waits-30s failed CI with a UI test compile error
+# ("Self is not allowed" in a default argument, "Self in default argument"). Builds the checked-out
+# commit and refuses uncommitted changes. Skips pushes that change only prose (*.md, LICENSE), the same
+# rule as CI's `changes` job.
+# Enable once per clone; worktrees share it: git config core.hooksPath .githooks
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+
+zero=0000000000000000000000000000000000000000
+head=$(git rev-parse HEAD)
+code=false
+while read -r _ local_sha _ remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue   # deleting a branch
+  if [ "$local_sha" != "$head" ]; then
+    # The build reads the checkout, so it can't vouch for another commit; CI builds that one.
+    echo "pre-push: $local_sha is not checked out, leaving its build to CI" >&2
+    continue
+  fi
+  if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    base=$(git merge-base origin/main "$local_sha" 2>/dev/null || true)   # new branch
+  else
+    base=$remote_sha
+  fi
+  if [ -z "$base" ]; then code=true; continue; fi
+  # One path per line (Git quotes unusual names, which then count as code); a failed diff aborts.
+  changed=$(git diff --name-only "$base" "$local_sha")
+  if printf '%s\n' "$changed" | grep -qvE '^(.*\.md|LICENSE)?$'; then code=true; fi
+done
+
+if [ "$code" = false ]; then
+  echo "pre-push: no code to build in the checked-out commit, skipping" >&2
+  exit 0
+fi
+if ! git diff --quiet HEAD --; then
+  echo "pre-push: uncommitted changes would be built instead of the pushed commit; commit or stash them" >&2
+  exit 1
+fi
+
+echo "pre-push: xcodebuild build-for-testing (QuietControl, generic iOS Simulator)" >&2
+log=$(mktemp -t quietcontrol-prepush)
+if xcodebuild build-for-testing -project QuietControl.xcodeproj -scheme QuietControl \
+    -destination 'generic/platform=iOS Simulator' -derivedDataPath build/PrePush \
+    CODE_SIGNING_ALLOWED=NO -quiet >"$log" 2>&1; then
+  rm -f "$log"
+else
+  grep -E "^/.*error:" "$log" | sort -u >&2 || true
+  echo "pre-push: build failed, push aborted (full log: $log)" >&2
+  exit 1
+fi
