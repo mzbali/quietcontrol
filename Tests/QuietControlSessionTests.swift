@@ -293,8 +293,14 @@ final class QuietControlSessionTests: XCTestCase {
         let session = try makeSession(scenario: .connected, runID: "settings-\(UUID().uuidString.prefix(8))")
         let connected = await waitUntil { session.isConnected && !session.isWorking }
         XCTAssertTrue(connected)
+        // Main CI run 43624764876: Settings opened while a read held the link, its refreshPreferences was dropped
+        // by the busy guard, and Auto-Off stayed "Not read". Ask for the preferences mid-read.
+        let inFlight = Task { await session.refresh() }
+        await Task.yield()
+        XCTAssertTrue(session.isWorking, "Precondition: another read holds the link")
         await session.refreshPreferences()
-        XCTAssertEqual(session.preferencePackets["autoOff"], Data([0]))
+        await inFlight.value
+        XCTAssertEqual(session.preferencePackets["autoOff"], Data([0]), "Preferences are read once the link frees up")
         XCTAssertEqual(session.preferencePackets["rememberMode"], Data([1]))
 
         await session.setPreference("autoOff", value: 20)
