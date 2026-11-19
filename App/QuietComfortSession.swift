@@ -1019,6 +1019,13 @@ final class QuietComfortSession: NSObject, ObservableObject {
 
     func refreshPreferences() async {
         guard isConnected, !isPreview else { return }
+        // Settings asks for this as it opens. If a read holds the link (a slow device-list read at connect) or an
+        // action is queued, performUserCommand would silently drop the request and the settings would stay "Not read".
+        while isWorking || isUserCommandPending {
+            do { try await Task.sleep(nanoseconds: UInt64(environment.timing.refreshPollInterval * 1_000_000_000)) }
+            catch { return }
+            guard isConnected else { return }
+        }
         preferencesFailure = nil
         await performUserCommand {
             self.preferencePackets = [:]
