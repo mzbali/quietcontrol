@@ -17,6 +17,9 @@
   commit signing files or move those settings into tracked config.
 - CI runs `core`, `session` and every UI journey except `access` on each PR, so
   don't run those lanes on the Mac just to open a PR; let CI do it.
+- CI builds with the runner's Xcode 26, the Mac with Xcode 27. A long SwiftUI modifier chain can
+  type-check here and fail there ("unable to type-check this expression in reasonable time", #18):
+  give a big row or control its own small function with typed locals instead of one inline chain.
 - The user's target is iOS 27; acceptance has run on iOS 27.1. The app's iOS 17
   deployment minimum is a separate compatibility concern, not the requested phone
   target. Report the actual runtime used and any unavailable coverage honestly.
