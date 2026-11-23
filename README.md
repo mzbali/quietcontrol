@@ -102,13 +102,13 @@ not required. See [the testing policy and commands](docs/testing/README.md).
 4. For a first setup, turn on your QC and connect it in iPhone **Settings →
    Bluetooth**. Tap **Find my QuietComfort**, allow Bluetooth, select the QC in
    Connection inspection, then tap **Done**.
-5. Run **Verify controls** once for a newly selected headphone/firmware combination.
-   This briefly switches modes and changes one bass step, restores the starting
-   values, and checks them. Mode/EQ controls unlock after the check succeeds.
-6. For a new QC/firmware, **Check device controls** verifies connect/disconnect and
-   multipoint, restoring the starting connections. Audio briefly stops during
-   this explicit check; playback may need resuming afterward. Only confirmed
-   device capabilities are enabled.
+5. Standard QC model `884367-0100` on firmware `1.0.6-80+f5f219b` unlocks mode,
+   EQ and device-connection controls automatically after the live identity and
+   snapshot are read. A reinstall does not require repeating disruptive checks.
+6. Other firmware still needs **Finish setup** and **Check device controls**.
+   Tapping a disconnected device opens whichever check is needed. These explicit
+   checks briefly change modes/EQ or interrupt audio, then restore the starting
+   settings and connections. Checks remain available from Settings → More.
 
 The app identifier is `uk.co.mzbali.quietcontrol`. Existing installations retain
 their selected QC and verification when updated. If the verification is

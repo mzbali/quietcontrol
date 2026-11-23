@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 final class QuietControlUITests: XCTestCase {
     private let quietValue = "Selected"
@@ -373,7 +374,7 @@ final class QuietControlUITests: XCTestCase {
             if current != previous { previous = current; stableSince = Date(); return false }
             return Date().timeIntervalSince(stableSince) >= 0.5
         }, object: nil)
-        let stable = XCTWaiter.wait(for: [settled], timeout: 8) == .completed
+        let stable = XCTWaiter.wait(for: [settled], timeout: Self.elementTimeout) == .completed
         XCTAssertTrue(stable, "The hero and both Save controls must settle before the audit: \(frames())")
         guard stable else { return }
         let before = frames()
@@ -404,6 +405,76 @@ final class QuietControlUITests: XCTestCase {
         shot.name = name
         shot.lifetime = .keepAlways
         add(shot)
+    }
+
+    /// Read rendered pixels, rather than the selected Settings button: the bug left
+    /// cached drawings in the previous accent while the rest of Home updated.
+    private func assertAccent(_ rgb: [CGFloat], in rect: CGRect, screenshot: XCUIScreenshot,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        let image = screenshot.image
+        guard let source = image.cgImage,
+              let crop = source.cropping(to: CGRect(x: rect.minX * image.scale, y: rect.minY * image.scale,
+                                                    width: rect.width * image.scale, height: rect.height * image.scale)) else {
+            XCTFail("Could not crop the accent drawing", file: file, line: line); return
+        }
+        var pixels = [UInt8](repeating: 0, count: crop.width * crop.height * 4)
+        let matches = pixels.withUnsafeMutableBytes { bytes -> Int in
+            guard let context = CGContext(data: bytes.baseAddress, width: crop.width, height: crop.height,
+                                          bitsPerComponent: 8, bytesPerRow: crop.width * 4,
+                                          space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return 0 }
+            context.draw(crop, in: CGRect(x: 0, y: 0, width: crop.width, height: crop.height))
+            return stride(from: 0, to: bytes.count, by: 4).filter { offset in
+                (0..<3).allSatisfy { channel in abs(CGFloat(bytes[offset + channel]) / 255 - rgb[channel]) < 0.06 }
+            }.count
+        }
+        XCTAssertGreaterThan(matches, 30, "Drawing must use the selected accent; found only \(matches) matching pixels", file: file, line: line)
+    }
+
+    func testAccentChangesRecolourHomeAndEqualizerWithoutChangingHeadphoneState() {
+        for appearance in ["dark", "light"] {
+            let runID = "accent-\(appearance)-\(UUID().uuidString.prefix(8))"
+            let app = launch(runID: runID, scenario: "connected", reset: true, appearance: appearance)
+            XCTAssertTrue(waitForEnabled(app.buttons["mode-0"]))
+            // Visit EQ first so subsequent accent changes must also update an
+            // already-created destination, with exactly the same headphone values.
+            openEqualizer(app)
+            leaveEqualizer(app)
+            let colours: [(String, [CGFloat])] = appearance == "dark"
+                ? [("amber", [0.96, 0.71, 0.32]), ("violet", [0.69, 0.62, 1]), ("teal", [0.34, 0.81, 0.70])]
+                : [("amber", [0.55, 0.33, 0.02]), ("violet", [0.38, 0.25, 0.74]), ("teal", [0.08, 0.39, 0.33])]
+            for (accent, rgb) in colours {
+                app.swipeDown()
+                openSettings(app)
+                let choice = app.buttons["accent-\(accent)"]
+                for _ in 0..<6 {
+                    if choice.isHittable { break }
+                    app.swipeUp()
+                }
+                XCTAssertTrue(choice.isHittable)
+                choice.tap()
+                app.buttons["settings-done"].tap()
+
+                let hero = element("current-mode", in: app).frame
+                let home = app.screenshot()
+                let shot = XCTAttachment(screenshot: home)
+                shot.name = "accent-\(appearance)-\(accent)-home"; shot.lifetime = .keepAlways; add(shot)
+                assertAccent(rgb, in: CGRect(x: hero.minX + 16, y: hero.maxY - 22, width: hero.width - 32, height: 12), screenshot: home)
+                let eq = element("equalizer-row", in: app)
+                if !eq.isHittable { app.swipeUp() }
+                assertAccent(rgb, in: eq.frame, screenshot: app.screenshot())
+                openEqualizer(app)
+                let point = element("eq-point-1", in: app)
+                XCTAssertTrue(point.waitForExistence(timeout: 10))
+                let detail = app.screenshot()
+                let detailShot = XCTAttachment(screenshot: detail)
+                detailShot.name = "accent-\(appearance)-\(accent)-equalizer"; detailShot.lifetime = .keepAlways; add(detailShot)
+                assertAccent(rgb, in: point.frame, screenshot: detail)
+                leaveEqualizer(app)
+                XCTAssertEqual(app.buttons["mode-0"].value as? String, quietValue)
+            }
+            app.terminate()
+        }
     }
 
     func testTappingAwareUsesRealControlAndConfirmsWithIndependentGet() {
@@ -669,6 +740,66 @@ final class QuietControlUITests: XCTestCase {
         XCTAssertEqual(occurrences(of: "outbound bmap 1f0602", in: log), 1,
                        "Only the saved edit wrote mode configuration; Cancel and Wind Block did not")
         XCTAssertTrue(log.contains("outbound bmap 1f030100"), "Saved strength is read back independently")
+    }
+
+    func testKnownHeadphonesUnlockAutomaticallyAfterFreshInstall() {
+        let runID = "fresh-install-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "fresh-install", reset: true)
+        XCTAssertTrue(waitForEnabled(app.buttons["mode-0"]))
+        XCTAssertFalse(app.buttons["Finish setup"].exists)
+        XCTAssertFalse(app.buttons["Check device controls"].exists)
+        let work = element("device-Work-laptop", in: app)
+        let mac = element("device-MacBook-Pro", in: app)
+        XCTAssertTrue(waitForValue(work, "Tap to switch"))
+        attachScreenshot(app, name: "fresh-install-ready")
+        tapWhenEnabled(work)
+        XCTAssertTrue(waitForValue(work, "Connected"))
+        XCTAssertTrue(waitForValue(mac, "Tap to switch"))
+        let undo = app.buttons["undo-swap"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 5))
+        undo.tap()
+        XCTAssertTrue(waitForValue(mac, "Connected"))
+        XCTAssertTrue(waitForValue(work, "Tap to switch"))
+        let log = attachTranscript(app, runID: runID, note: "No saved verification: supported QC unlocks automatically, switch and Undo restore connections.")
+        XCTAssertFalse(log.contains("outbound bmap 1f0305"), "Connection must not run a mode proof")
+        XCTAssertFalse(log.contains("outbound bmap 010702"), "Connection must not run an EQ proof")
+    }
+
+    func testUnverifiedDeviceTapGuidesSetupThenAllowsSwitching() {
+        let runID = "device-setup-\(UUID().uuidString)"
+        let app = launch(runID: runID, scenario: "setup-required", reset: true)
+        let work = element("device-Work-laptop", in: app)
+        let mac = element("device-MacBook-Pro", in: app)
+        XCTAssertTrue(waitForValue(work, "Finish setup to connect"))
+        tapWhenEnabled(work)
+        XCTAssertTrue(app.buttons["Run control check"].waitForExistence(timeout: 10))
+        attachScreenshot(app, name: "device-setup-direct-check")
+        app.buttons["Run control check"].tap()
+        // The success label can be below List's lazy viewport. Done stays
+        // disabled until restoration finishes; Home then proves the new gate.
+        tapWhenEnabled(app.buttons["Done"])
+
+        XCTAssertTrue(waitForValue(work, "Set up device switching"))
+        tapWhenEnabled(work)
+        XCTAssertTrue(app.navigationBars["Device controls"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["Connect and disconnect verified"].exists,
+                       "Opening setup must not run a disruptive check automatically.")
+        attachScreenshot(app, name: "device-setup-connection-check")
+        app.buttons["Verify device controls"].tap()
+        XCTAssertTrue(app.staticTexts["Connect and disconnect verified"].waitForExistence(timeout: 45))
+        tapWhenEnabled(app.buttons["Done"])
+
+        XCTAssertTrue(waitForValue(work, "Tap to switch"))
+        tapWhenEnabled(work)
+        XCTAssertTrue(waitForValue(work, "Connected"))
+        XCTAssertTrue(waitForValue(mac, "Tap to switch"))
+        attachScreenshot(app, name: "device-setup-switched")
+        let undo = app.buttons["undo-swap"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 5))
+        undo.tap()
+        XCTAssertTrue(waitForValue(mac, "Connected"))
+        XCTAssertTrue(waitForValue(work, "Tap to switch"))
+        attachTranscript(app, runID: runID, note: "Missing mode/EQ and device proofs guided by tapping the target; both explicit checks restore state; switch and Undo succeed.")
     }
 
     func testAudioDeviceSwapAndUndoRestoreConnections() {

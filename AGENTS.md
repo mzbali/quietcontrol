@@ -10,6 +10,11 @@
   phone, require `./scripts/verify.sh preinstall` to pass for the source being
   installed. A passing gate makes the build eligible for an already-authorized
   installation; it does not itself authorize installing or deploying anything.
+- Phone builds take their signing from the gitignored `Configuration/Local.xcconfig`
+  (its `[sdk=iphoneos*]` settings may set the team, bundle ID and profile). Build
+  for the device as usual and install with `xcrun devicectl device install app`;
+  if that signing has no debugger entitlement, Xcode's Run cannot attach. Never
+  commit signing files or move those settings into tracked config.
 - CI runs `core`, `session` and every UI journey except `access` on each PR, so
   don't run those lanes on the Mac just to open a PR; let CI do it.
 - The user's target is iOS 27; acceptance has run on iOS 27.1. The app's iOS 17

@@ -49,6 +49,7 @@ struct QuietControlView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage(QCAccent.storageKey) private var accentTheme = QCAccent.teal.rawValue
+    private var accent: Color { (QCAccent(rawValue: accentTheme) ?? .teal).color }
     /// In UI-test mode the launch configuration supplies the accessibility size
     /// for descendants via `.environment`, but this root view's own environment
     /// still reports the system default. Mirror the same size here so the root
@@ -156,7 +157,7 @@ struct QuietControlView: View {
                     if scenePhase == .active && !showingInspection && !showingControlCheck && !showingDeviceCheck { await session.refresh() }
                 }
             }
-        }.tint(QCAccent(rawValue: accentTheme)?.color ?? QCTheme.accent).modifier(QCFeedbackOverlay(session: session))
+        }.tint(accent).modifier(QCFeedbackOverlay(session: session))
             .modifier(QCUITestPresentation(testMode: session.environment.isTestMode))
     }
 
@@ -332,6 +333,8 @@ struct QuietControlView: View {
     private func modeHero(_ mode: ListeningMode) -> some View {
         let live = session.isConnected
         let strength = mode.windBlock ? 10 : max(0, min(10, mode.ancStrength))
+        // ForEach must capture the observed colour, so unchanged segments redraw.
+        let accent = self.accent
         // The segmented control below already names the mode; the card states what it does.
         let (kind, level) = heroParts(mode)
         return VStack(alignment: .leading, spacing: 10) {
@@ -357,7 +360,7 @@ struct QuietControlView: View {
             }
             HStack(spacing: 3) {
                 ForEach(0..<10, id: \.self) { step in
-                    Capsule().fill(step < strength ? (live ? QCTheme.accent : Color.secondary.opacity(0.55)) : Color.primary.opacity(0.10))
+                    Capsule().fill(step < strength ? (live ? accent : Color.secondary.opacity(0.55)) : Color.primary.opacity(0.10))
                         .frame(height: 6)
                 }
             }.animation(.easeInOut(duration: 0.3), value: strength)
@@ -492,14 +495,19 @@ struct QuietControlView: View {
                 }
             }
             if session.isConnected && !session.deviceControlsVerified {
-                Button("Check device controls") { showingDeviceCheck = true }.font(.caption).frame(minHeight: 44)
+                Button("Check device controls") { openDeviceSetup() }.font(.caption).frame(minHeight: 44)
             }
         }
     }
     /// Tap a device to hear it. When the slots are full and exactly one other device can make room,
     /// swap in one tap (with Undo); otherwise ask which device should disconnect.
     private func selectDevice(_ device: PairedAudioDevice) {
-        guard canManage, !device.isConnected else { return }
+        guard session.isConnected, session.hasLiveDeviceList, !session.controlsBusy,
+              pendingMode == nil, !device.isConnected else { return }
+        guard session.hasVerifiedDirectControl, session.deviceControlsVerified else {
+            openDeviceSetup()
+            return
+        }
         switch try? DeviceConnectionPlanner.plan(target: device.address, devices: session.devices, multipoint: session.multipoint == true) {
         case .connect: Task { await session.connectAudioDevice(device.address) }
         case .chooseReplacement(let connected):
@@ -511,6 +519,10 @@ struct QuietControlView: View {
         default: break
         }
     }
+    private func openDeviceSetup() {
+        if session.hasVerifiedDirectControl { showingDeviceCheck = true }
+        else { showingControlCheck = true }
+    }
     private func pickRow(_ device: PairedAudioDevice) -> some View {
         let current = session.isConnected && session.hasLiveDeviceList
         let connected = isHighlighted(device)
@@ -520,7 +532,10 @@ struct QuietControlView: View {
                 target: device.address, devices: session.devices, multipoint: session.multipoint == true) else { return false }
             return occupied.filter { $0 != phoneDevice?.address }.count == 1
         }()
-        let status = !current ? "Unavailable" : active ? "Active audio" : connected ? "Connected" : swaps ? "Tap to switch" : "Tap to connect"
+        let status = !current ? "Unavailable" : active ? "Active audio" : connected ? "Connected"
+            : !session.hasVerifiedDirectControl ? "Finish setup to connect"
+            : !session.deviceControlsVerified ? "Set up device switching"
+            : swaps ? "Tap to switch" : "Tap to connect"
         return Button { selectDevice(device) } label: {
             HStack(spacing: 12) {
                 Image(systemName: deviceIcon(device)).font(.system(size: 21))
@@ -543,7 +558,7 @@ struct QuietControlView: View {
             .overlay { if connected { RoundedRectangle(cornerRadius: 14).strokeBorder(QCTheme.accent.opacity(0.45), lineWidth: 1.2) } }
             .contentShape(RoundedRectangle(cornerRadius: 14))
         }
-        .buttonStyle(.plain).disabled(!current)
+        .buttonStyle(.plain).disabled(!current || session.controlsBusy || pendingMode != nil)
         .contextMenu {
             if connected {
                 Button("Disconnect", systemImage: "link", role: .destructive) { Task { await session.disconnectAudioDevice(device.address) } }
@@ -656,13 +671,13 @@ struct QuietControlView: View {
                             Spacer(minLength: 0)
                             Image(systemName: "chevron.right").font(.caption2.bold()).foregroundStyle(.tertiary)
                         }
-                        EQMiniature(values: session.eq.map(\.value)).frame(width: 154, height: 44)
+                        EQMiniature(values: session.eq.map(\.value), accent: accent).frame(width: 154, height: 44)
                     }
                 } else {
                     HStack(spacing: 10) {
                         Text("Equalizer").font(.subheadline)
                         Spacer(minLength: 8)
-                        if session.eq.count == 3 { EQMiniature(values: session.eq.map(\.value)).frame(width: 176, height: 48) }
+                        if session.eq.count == 3 { EQMiniature(values: session.eq.map(\.value), accent: accent).frame(width: 176, height: 48) }
                         Image(systemName: "chevron.right").font(.caption2.bold()).foregroundStyle(.tertiary)
                     }
                 }
@@ -688,7 +703,7 @@ struct QuietControlView: View {
                     }.foregroundStyle(QCTheme.battery(level))
                 }
                 ForEach([[-1, 4, 2], [-10, 10, -10], [10, -10, 10]], id: \.self) { values in
-                    HStack { Text("Equalizer").font(.subheadline); Spacer(); EQMiniature(values: values).frame(width: 154, height: 42) }
+                    HStack { Text("Equalizer").font(.subheadline); Spacer(); EQMiniature(values: values, accent: accent).frame(width: 154, height: 42) }
                         .padding(12).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 15))
                 }
                 ForEach([QCFeedback(text: "Quiet selected", symbol: "moon"), QCFeedback(text: "EQ saved", symbol: "eq.curve"), QCFeedback(text: "Device connected", symbol: "link")]) { item in
@@ -771,6 +786,7 @@ private struct SavedEQPreset: Codable, Identifiable {
 
 private struct EqualizerView: View {
     @ObservedObject var session: QuietComfortSession
+    @AppStorage(QCAccent.storageKey) private var accentTheme = QCAccent.teal.rawValue
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var editing = false
     @State private var activeBand: Int?
@@ -812,7 +828,8 @@ private struct EqualizerView: View {
                         }
                     }.padding(.top, 24)
                     }
-                    InteractiveEQCurve(values: displayed, activeBand: activeBand, enabled: enabled && pendingBand == nil,
+                    InteractiveEQCurve(values: displayed, accent: (QCAccent(rawValue: accentTheme) ?? .teal).color,
+                        activeBand: activeBand, enabled: enabled && pendingBand == nil,
                         preview: { index, value in
                             if !editing {
                                 editing = true; session.setEditingEQ(true); previewValues = session.eq.map(\.value)
@@ -947,6 +964,7 @@ private struct EqualizerView: View {
 
 private struct InteractiveEQCurve: View {
     let values: [Int]
+    let accent: Color
     let activeBand: Int?
     let enabled: Bool
     let preview: (Int, Int) -> Void
@@ -968,22 +986,22 @@ private struct InteractiveEQCurve: View {
                         .position(x: 8, y: center - CGFloat(value) * scale)
                 }
                 curve(points).addingLine(to: CGPoint(x: points.last?.x ?? 0, y: proxy.size.height), from: CGPoint(x: points.first?.x ?? 0, y: proxy.size.height))
-                    .fill(LinearGradient(colors: [QCTheme.accent.opacity(0.22), QCTheme.accent.opacity(0)], startPoint: .top, endPoint: .bottom))
-                curve(points).stroke(QCTheme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .fill(LinearGradient(colors: [accent.opacity(0.22), accent.opacity(0)], startPoint: .top, endPoint: .bottom))
+                curve(points).stroke(accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 if let active = activeBand, points.indices.contains(active) {
                     let point = points[active]
                     Path { p in p.move(to: CGPoint(x: point.x, y: 8)); p.addLine(to: CGPoint(x: point.x, y: proxy.size.height - 8)) }
-                        .stroke(QCTheme.accent.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        .stroke(accent.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                     Text(values[active] > 0 ? "+\(values[active])" : "\(values[active])")
                         .font(.caption.weight(.bold).monospacedDigit()).foregroundStyle(QCTheme.onAccent)
-                        .padding(.horizontal, 9).padding(.vertical, 3).background(QCTheme.accent, in: Capsule())
+                        .padding(.horizontal, 9).padding(.vertical, 3).background(accent, in: Capsule())
                         .position(x: min(max(point.x, 24), proxy.size.width - 24), y: max(14, point.y - 30))
                         .accessibilityHidden(true)
                 }
                 ForEach(Array(points.enumerated()), id: \.offset) { index, point in
-                    Circle().fill(activeBand == index ? QCTheme.accent : Color(uiColor: .secondarySystemGroupedBackground))
-                        .overlay(Circle().stroke(QCTheme.accent, lineWidth: 2.5))
-                        .background(Circle().fill(QCTheme.accent.opacity(activeBand == index ? 0.25 : 0)).padding(-7))
+                    Circle().fill(activeBand == index ? accent : Color(uiColor: .secondarySystemGroupedBackground))
+                        .overlay(Circle().stroke(accent, lineWidth: 2.5))
+                        .background(Circle().fill(accent.opacity(activeBand == index ? 0.25 : 0)).padding(-7))
                         .frame(width: activeBand == index ? 22 : 19, height: activeBand == index ? 22 : 19)
                         .frame(width: 48, height: 48).contentShape(Rectangle()).position(point)
                         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("eqCurve"))
@@ -1027,7 +1045,11 @@ private struct DeviceCheckView: View {
                 Section {
                     Text("Check that your QC can connect and disconnect audio devices while keeping this app connected. Audio will briefly stop. Starting connections and multipoint will be restored.")
                     Button("Verify device controls") { Task { await session.verifyDeviceControls() } }
-                        .disabled(session.isWorking || !session.isConnected)
+                        .disabled(session.isWorking || !session.isConnected || !session.hasVerifiedDirectControl)
+                    if !session.hasVerifiedDirectControl {
+                        Text("Finish the mode and EQ control check before checking device connections.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                     if session.isWorking { ProgressView(session.message) }
                     if session.deviceControlsVerified { Label("Connect and disconnect verified", systemImage: "checkmark.circle.fill").foregroundStyle(QCTheme.accent) }
                     Text(session.message)
@@ -1089,6 +1111,7 @@ private extension View {
 
 private struct ModeEditorView: View {
     @ObservedObject var session: QuietComfortSession
+    @AppStorage(QCAccent.storageKey) private var accentTheme = QCAccent.teal.rawValue
     let selected: ListeningMode
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -1218,13 +1241,14 @@ private struct ModeEditorView: View {
             Text(summary).font(.subheadline).foregroundStyle(Color.primary).accessibilityIdentifier("mode-summary")
             StrengthMeter(value: Binding(get: { Double(level) }, set: { strength = $0; dirty = true }),
                           saved: live.editable && dirty ? (live.windBlock ? 10 : live.ancStrength) : nil,
-                          enabled: enabled && !wind, locked: !live.editable || wind)
+                          enabled: enabled && !wind, locked: !live.editable || wind,
+                          accent: (QCAccent(rawValue: accentTheme) ?? .teal).color)
                 .padding(.top, 6)
             HStack {
                 Label("Hear the world", systemImage: "ear")
                 Spacer()
                 Label("Block it out", systemImage: "moon.fill").labelStyle(TrailingIconLabelStyle())
-            }.font(.caption2).foregroundStyle(Color.primary)
+            }.font(.caption).foregroundStyle(QCTheme.toolbarText).padding(.top, 4)
             if live.editable && dirty { Text("┆ marks the saved level").font(.caption2).foregroundStyle(Color.primary) }
         }
         .padding(16)
@@ -1253,6 +1277,7 @@ private struct StrengthMeter: View {
     let saved: Int?
     let enabled: Bool
     let locked: Bool
+    let accent: Color
     var body: some View {
         GeometryReader { proxy in
             let spacing: CGFloat = 4
@@ -1261,7 +1286,7 @@ private struct StrengthMeter: View {
                 HStack(spacing: spacing) {
                     ForEach(0..<10, id: \.self) { index in
                         RoundedRectangle(cornerRadius: 7)
-                            .fill(index < Int(value) ? (locked ? Color.secondary.opacity(0.5) : QCTheme.accent) : Color.primary.opacity(0.10))
+                            .fill(index < Int(value) ? (locked ? Color.secondary.opacity(0.5) : accent) : Color.primary.opacity(0.10))
                     }
                 }
                 if let saved, saved > 0, saved < 10 {
@@ -1618,6 +1643,7 @@ private extension Path {
 
 private struct EQMiniature: View {
     let values: [Int]
+    let accent: Color
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var body: some View {
         GeometryReader { proxy in
@@ -1638,10 +1664,10 @@ private struct EQMiniature: View {
                         let previous = points[index - 1], next = points[index], middle = (previous.x + next.x) / 2
                         path.addCurve(to: next, control1: CGPoint(x: middle, y: previous.y), control2: CGPoint(x: middle, y: next.y))
                     }
-                }.stroke(QCTheme.accent, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                }.stroke(accent, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                 ForEach(Array(points.enumerated()), id: \.offset) { index, point in
                     Circle().fill(Color(uiColor: .secondarySystemGroupedBackground))
-                        .overlay(Circle().stroke(QCTheme.accent, lineWidth: 1))
+                        .overlay(Circle().stroke(accent, lineWidth: 1))
                         .frame(width: 3.5, height: 3.5).position(point)
                     Text(values[index] > 0 ? "+\(values[index])" : "\(values[index])")
                         .font(.system(size: textSize).monospacedDigit()).foregroundStyle(Color.primary)
