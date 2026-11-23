@@ -80,6 +80,10 @@ struct QuietControlView: View {
 
     private var canControl: Bool { session.isConnected && session.hasVerifiedDirectControl && !session.controlsBusy && pendingMode == nil }
     private var canManage: Bool { canControl && session.deviceControlsVerified && session.hasLiveDeviceList }
+    /// A tap on a disconnected device may act: `selectDevice` connects, swaps, or opens the check still missing.
+    private var canSelectDevice: Bool {
+        session.isConnected && session.hasLiveDeviceList && !session.controlsBusy && pendingMode == nil
+    }
     private var featuredMode: ListeningMode? {
         session.modes.first { $0.index > 1 && $0.promptID == 13 } ?? session.modes.first { $0.index > 1 }
     }
@@ -502,8 +506,7 @@ struct QuietControlView: View {
     /// Tap a device to hear it. When the slots are full and exactly one other device can make room,
     /// swap in one tap (with Undo); otherwise ask which device should disconnect.
     private func selectDevice(_ device: PairedAudioDevice) {
-        guard session.isConnected, session.hasLiveDeviceList, !session.controlsBusy,
-              pendingMode == nil, !device.isConnected else { return }
+        guard canSelectDevice, !device.isConnected else { return }
         guard session.hasVerifiedDirectControl, session.deviceControlsVerified else {
             openDeviceSetup()
             return
@@ -564,7 +567,7 @@ struct QuietControlView: View {
                 Button("Disconnect", systemImage: "link", role: .destructive) { Task { await session.disconnectAudioDevice(device.address) } }
                     .disabled(!canManage)
             } else if current {
-                Button("Connect", systemImage: "link") { selectDevice(device) }.disabled(!canManage)
+                Button("Connect", systemImage: "link") { selectDevice(device) }.disabled(!canSelectDevice)
             }
         }
         .animation(.easeOut(duration: 0.2), value: connected)
@@ -573,7 +576,10 @@ struct QuietControlView: View {
         .accessibilityLabel(device.name)
         .accessibilityValue(status)
         .accessibilityAddTraits(connected ? [.isButton, .isSelected] : .isButton)
-        .accessibilityHint(connected ? "Connected. Use actions to disconnect." : swaps ? "Switches audio to this device." : "Connects this device.")
+        .accessibilityHint(connected ? "Connected. Use actions to disconnect."
+            : !session.hasVerifiedDirectControl ? "Opens the control check needed before connecting."
+            : !session.deviceControlsVerified ? "Opens the device connection check."
+            : swaps ? "Switches audio to this device." : "Connects this device.")
         .accessibilityActions {
             if connected { Button("Disconnect") { Task { await session.disconnectAudioDevice(device.address) } } }
         }
@@ -618,7 +624,7 @@ struct QuietControlView: View {
                     else if device.isConnected { Image(systemName: "checkmark.circle.fill").foregroundStyle(QCTheme.accent) }
                     else {
                         Button("Connect") { selectDevice(device) }.font(.caption.weight(.semibold))
-                            .buttonStyle(.bordered).controlSize(.small).disabled(!canManage)
+                            .buttonStyle(.bordered).controlSize(.small).disabled(!canSelectDevice)
                     }
                 }.font(.body).accessibilityHidden(!current)
             } else if current {
