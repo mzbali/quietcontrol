@@ -1005,30 +1005,41 @@ private struct InteractiveEQCurve: View {
                         .accessibilityHidden(true)
                 }
                 ForEach(Array(points.enumerated()), id: \.offset) { index, point in
-                    Circle().fill(activeBand == index ? accent : Color(uiColor: .secondarySystemGroupedBackground))
-                        .overlay(Circle().stroke(accent, lineWidth: 2.5))
-                        .background(Circle().fill(accent.opacity(activeBand == index ? 0.25 : 0)).padding(-7))
-                        .frame(width: activeBand == index ? 22 : 19, height: activeBand == index ? 22 : 19)
-                        .frame(width: 48, height: 48).contentShape(Rectangle()).position(point)
-                        .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("eqCurve"))
-                            .onChanged { value in
-                                guard enabled, activeBand == nil || activeBand == index else { return }
-                                let raw: CGFloat = (center - value.location.y) / scale
-                                preview(index, max(-10, min(10, Int(raw.rounded()))))
-                            }.onEnded { _ in if activeBand == index { commit(index) } })
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityIdentifier("eq-point-\(index)")
-                        .accessibilityLabel(["Bass", "Mid", "Treble"][index])
-                        .accessibilityValue("\(values[index])")
-                        .accessibilityAdjustableAction { direction in
-                            guard enabled else { return }
-                            let step: Int = direction == .increment ? 1 : -1
-                            let next = max(-10, min(10, values[index] + step))
-                            preview(index, next); commit(index)
-                        }
+                    bandHandle(index, at: point, center: center, scale: scale)
                 }
             }.coordinateSpace(name: "eqCurve")
         }
+    }
+    /// One draggable band point. Kept out of `body`: written inline with a stored accent colour,
+    /// the chain was too complex for CI's Xcode 26 type checker (#18), though Xcode 27 builds it.
+    private func bandHandle(_ index: Int, at point: CGPoint, center: CGFloat, scale: CGFloat) -> some View {
+        let isActive: Bool = activeBand == index
+        let size: CGFloat = isActive ? 22 : 19
+        let fill: Color = isActive ? accent : Color(uiColor: .secondarySystemGroupedBackground)
+        let halo: Color = accent.opacity(isActive ? 0.25 : 0)
+        let drag = DragGesture(minimumDistance: 0, coordinateSpace: .named("eqCurve"))
+            .onChanged { value in
+                guard enabled, activeBand == nil || activeBand == index else { return }
+                let raw: CGFloat = (center - value.location.y) / scale
+                preview(index, max(-10, min(10, Int(raw.rounded()))))
+            }
+            .onEnded { _ in if activeBand == index { commit(index) } }
+        return Circle().fill(fill)
+            .overlay(Circle().stroke(accent, lineWidth: 2.5))
+            .background(Circle().fill(halo).padding(-7))
+            .frame(width: size, height: size)
+            .frame(width: 48, height: 48).contentShape(Rectangle()).position(point)
+            .gesture(drag)
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("eq-point-\(index)")
+            .accessibilityLabel(["Bass", "Mid", "Treble"][index])
+            .accessibilityValue("\(values[index])")
+            .accessibilityAdjustableAction { direction in
+                guard enabled else { return }
+                let step: Int = direction == .increment ? 1 : -1
+                let next = max(-10, min(10, values[index] + step))
+                preview(index, next); commit(index)
+            }
     }
     private func curve(_ points: [CGPoint]) -> Path {
         Path { p in
