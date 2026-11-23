@@ -2999,6 +2999,226 @@
         "geometry": true,
         "journeyRunIDs": 3
       }
+    },
+    {
+      "name": "accent",
+      "id": "QuietControlUITests/QuietControlUITests/testAccentChangesRecolourHomeAndEqualizerWithoutChangingHeadphoneState()",
+      "label": "ui-accent",
+      "runs": [
+        {
+          "prefix": "accent-dark-",
+          "scenario": "connected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "transcript": {
+              "scenarios": [
+                "connected"
+              ],
+              "forbidden": [
+                "outbound:1f0305*",
+                "outbound:010702*"
+              ]
+            }
+          }
+        },
+        {
+          "prefix": "accent-light-",
+          "scenario": "connected",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "transcript": {
+              "scenarios": [
+                "connected"
+              ],
+              "forbidden": [
+                "outbound:1f0305*",
+                "outbound:010702*"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "device-setup",
+      "id": "QuietControlUITests/QuietControlUITests/testUnverifiedDeviceTapGuidesSetupThenAllowsSwitching()",
+      "label": "ui-device-setup",
+      "runs": [
+        {
+          "prefix": "device-setup-",
+          "scenario": "setup-required",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "firmware": "1.1.9-99+deadbeef"
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.1.9-99+deadbeef"
+            },
+            "transcript": {
+              "scenarios": [
+                "setup-required"
+              ],
+              "required": [
+                "outbound:1f0305020100",
+                "outbound:010702020000"
+              ],
+              "order": [
+                "outbound:04020506a1b2c3d4e502",
+                "outbound:0401050700a1b2c3d4e503",
+                "inbound:04050314a1b2c3d4e5030100*",
+                "outbound:04020506a1b2c3d4e503",
+                "outbound:0401050700a1b2c3d4e502",
+                "outbound:04050106a1b2c3d4e502",
+                "inbound:04050314a1b2c3d4e5020100*"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "fresh-install",
+      "id": "QuietControlUITests/QuietControlUITests/testKnownHeadphonesUnlockAutomaticallyAfterFreshInstall()",
+      "label": "ui-fresh-install",
+      "runs": [
+        {
+          "prefix": "fresh-install-",
+          "scenario": "fresh-install",
+          "reset": true,
+          "expect": {
+            "files": {
+              "require": [
+                "test-config.json",
+                "transport.jsonl",
+                "peripheral-state.json",
+                "LifecycleDiagnostics.jsonl",
+                "SessionDiagnostics.json",
+                "LastConfirmedState.json"
+              ]
+            },
+            "snapshot": {
+              "state": "present",
+              "lastMode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ]
+            },
+            "peripheral": {
+              "connected": true,
+              "mode": 0,
+              "eq": [
+                -1,
+                4,
+                2
+              ],
+              "multipoint": true,
+              "firmware": "1.0.6-80+f5f219b",
+              "activeAudio": "a1 b2 c3 d4 e5 01"
+            },
+            "transcript": {
+              "scenarios": [
+                "fresh-install"
+              ],
+              "order": [
+                "outbound:04020506a1b2c3d4e502",
+                "outbound:0401050700a1b2c3d4e503",
+                "inbound:04050314a1b2c3d4e5030100*",
+                "outbound:04020506a1b2c3d4e503",
+                "outbound:0401050700a1b2c3d4e502",
+                "outbound:04050106a1b2c3d4e502",
+                "inbound:04050314a1b2c3d4e5020100*"
+              ],
+              "required": [
+                "inbound:04050314a1b2c3d4e5030000*"
+              ],
+              "forbidden": [
+                "outbound:1f0305*",
+                "outbound:010702*"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

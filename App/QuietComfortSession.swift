@@ -421,7 +421,7 @@ final class QuietComfortSession: NSObject, ObservableObject {
             lifecycle.connected(); connectionState = lifecycle.state
             presentationTimer?.cancel(); presentationTimer = nil
             connectionTime = Date().timeIntervalSince(started)
-            hasVerifiedDirectControl = environment.defaults.bool(forKey: proofKey)
+            hasVerifiedDirectControl = hasBuiltInControlProfile || environment.defaults.bool(forKey: proofKey)
             message = "Connected directly. Battery, modes and EQ were read from your QC."
             log("\(message) Connection setup: \(Int((connectionTime ?? 0) * 1000)) ms.")
             do { try await readDevices() }
@@ -502,10 +502,10 @@ final class QuietComfortSession: NSObject, ObservableObject {
 
     private func capabilityKey(_ feature: String) -> String { "\(proofKey).devices.\(feature)" }
     private func loadDeviceCapabilities() {
-        deviceControlsVerified = environment.defaults.bool(forKey: capabilityKey("connect"))
-        disconnectAllVerified = environment.defaults.bool(forKey: capabilityKey("all"))
+        deviceControlsVerified = hasBuiltInControlProfile || environment.defaults.bool(forKey: capabilityKey("connect"))
+        disconnectAllVerified = hasBuiltInControlProfile || environment.defaults.bool(forKey: capabilityKey("all"))
         routingVerified = environment.defaults.bool(forKey: capabilityKey("routing"))
-        multipointVerified = environment.defaults.bool(forKey: capabilityKey("multipoint"))
+        multipointVerified = hasBuiltInControlProfile || environment.defaults.bool(forKey: capabilityKey("multipoint"))
     }
 
     private func scheduleDeviceRefresh() {
@@ -1062,7 +1062,13 @@ final class QuietComfortSession: NSObject, ObservableObject {
 
     /// Auto-Off [1.4] and Remember My Mode [31.5] write/read-back passed on this model and firmware only.
     /// [1.14] mirrors Remember My Mode but writing it alone leaves [31.5] unchanged, so it is never written.
-    private var powerSettingsProven: Bool { model == "884367-0100" && firmware == "1.0.6-80+f5f219b" }
+    /// Hardware evidence lives in docs/HARDWARE_CHECK.md. Read the identity and
+    /// validate the live snapshot before using this profile; reconnecting never
+    /// runs the disruptive mode/EQ or audio-connection verification sequences.
+    private var hasBuiltInControlProfile: Bool {
+        manufacturer == "Bose Corporation" && model == "884367-0100" && firmware == "1.0.6-80+f5f219b"
+    }
+    private var powerSettingsProven: Bool { hasBuiltInControlProfile }
     static let autoOffMinutes: [UInt8] = [5, 20, 40, 60, 180, 0]
     private func preferenceLocation(_ name: String) -> (UInt8, UInt8) {
         name == "rememberMode" ? (31, 5) : (1, ["voicePrompts": 3, "selfVoice": 11, "autoOff": 4, "shortcut": 9][name] ?? 0)

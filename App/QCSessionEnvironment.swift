@@ -127,6 +127,8 @@ final class QCSessionEnvironment {
 #if DEBUG && targetEnvironment(simulator)
 enum QCTestScenario: String, CaseIterable {
     case connected
+    case setupRequired = "setup-required"
+    case freshInstall = "fresh-install"
     case modeRejected = "mode-rejected"
     case modeUnconfirmed = "mode-unconfirmed"
     case offlineCached = "offline-cached"
@@ -142,7 +144,7 @@ enum QCTestScenario: String, CaseIterable {
 
     /// Synthetic firmware string the fixture reports for this scenario.
     var firmware: String {
-        self == .unsupportedFirmware ? "1.1.9-99+deadbeef" : "1.0.6-80+f5f219b"
+        self == .unsupportedFirmware || self == .setupRequired ? "1.1.9-99+deadbeef" : "1.0.6-80+f5f219b"
     }
 
     /// Only the first-run fixture starts without a remembered QC.
@@ -352,10 +354,12 @@ final class QCTestHarness {
             // Synthetic starting capability: this fixture represents a QC already
             // verified by an earlier session. The firmware/capability gates remain.
             let proofKey = "quietcontrol.verified.\(Self.peripheralID.uuidString).884367-0100.\(scenario.firmware)"
-            defaults.set(true, forKey: proofKey)
-            defaults.set(true, forKey: "\(proofKey).devices.connect")
-            defaults.set(true, forKey: "\(proofKey).devices.all")
-            defaults.set(true, forKey: "\(proofKey).devices.multipoint")
+            if scenario != .setupRequired && scenario != .freshInstall {
+                defaults.set(true, forKey: proofKey)
+                defaults.set(true, forKey: "\(proofKey).devices.connect")
+                defaults.set(true, forKey: "\(proofKey).devices.all")
+                defaults.set(true, forKey: "\(proofKey).devices.multipoint")
+            }
             defaults.set(true, forKey: "\(proofKey).devices.modeEditing")
             // Voice prompts have no self-verification path; this fixture represents a
             // QC where that single-byte write was proven in an earlier session.

@@ -57,9 +57,13 @@ larger-text layout refinements and retains the same verified device commands.
 The final build's mode/EQ check and session are `build/ControlProof-v2-final.json`
 and `build/Session-v2-final.json`.
 
-Connect/disconnect, Disconnect all and multipoint gates are stored per headphone
-and firmware after verification. Starting connections are restored after a test;
-media playback may need resuming. Normal user changes are left as requested.
+The app uses this hardware record as its built-in control profile for model
+884367-0100 on firmware 1.0.6-80+f5f219b: mode/EQ, connect/disconnect,
+Disconnect all and multipoint become available after live identity/snapshot reads,
+without repeating disruptive tests on every installation. Direct source routing
+remains unavailable. Other firmware uses per-headphone verification records.
+Starting connections are restored after an explicit diagnostic test; media
+playback may need resuming. Normal user changes are left as requested.
 See [device-management formats and boundaries](DEVICE_MANAGEMENT.md).
 
 ## Remaining manual checks
